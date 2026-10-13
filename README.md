@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="screenshot.png" alt="HydraFlasher main window" width="720">
-</p>
+
 
 # HydraFlasher
 
@@ -11,6 +9,10 @@ A desktop GUI for flashing SPI flash chips with [flashprog](https://flashprog.or
 The firmware adds up to six chip-select lines, so one Pico can serve several
 sockets: HydraFlasher scans them live, flashes and verifies each chip, and logs
 every run.
+
+<p align="center">
+  <img src="screenshot.png" alt="HydraFlasher main window" width="520">
+</p>
 
 ## Layout
 
