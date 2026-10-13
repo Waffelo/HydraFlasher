@@ -1,0 +1,24 @@
+name: firmware
+on:
+  push:
+    paths: ["firmware/**", ".github/workflows/firmware.yml"]
+  pull_request:
+    paths: ["firmware/**", ".github/workflows/firmware.yml"]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware
+    steps:
+      - run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi cmake
+      - uses: actions/checkout@v4
+      - run: git clone --depth 1 -b 1.5.0 https://github.com/raspberrypi/pico-sdk
+      - run: cd pico-sdk && git submodule update --init lib/tinyusb
+      - run: ./build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pico_serprog
+          path: |
+            firmware/build/pico_serprog.uf2
+            firmware/build/pico_serprog.elf

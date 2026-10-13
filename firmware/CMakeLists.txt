@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.13)
+set(CMAKE_INCLUDE_CURRENT_DIR ON)
+include(pico_sdk_import.cmake)
+project(pico_serprog)
+
+pico_sdk_init()
+
+# Use our patched TinyUSB CDC driver (separate IN buffer size) instead of the SDK's
+get_target_property(TUSB_DEVICE_SOURCES tinyusb_device_base INTERFACE_SOURCES)
+list(FILTER TUSB_DEVICE_SOURCES EXCLUDE REGEX "class/cdc/cdc_device\\.c$")
+set_target_properties(tinyusb_device_base PROPERTIES INTERFACE_SOURCES "${TUSB_DEVICE_SOURCES}")
+
+add_executable(pico_serprog)
+target_sources(pico_serprog PRIVATE main.c usb_descriptors.c tinyusb_patched/cdc_device.c)
+target_include_directories(pico_serprog PRIVATE ${PICO_TINYUSB_PATH}/src/class/cdc)
+target_link_libraries(pico_serprog PRIVATE pico_stdlib hardware_spi hardware_dma tinyusb_device)
+pico_add_extra_outputs(pico_serprog)
