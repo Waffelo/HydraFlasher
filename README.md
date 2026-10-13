@@ -1,7 +1,12 @@
 
 
 # HydraFlasher
+  [![Made with Claude Code](https://img.shields.io/badge/Made%20with-Claude%20Code-D97757?style=flat&logo=claude&logoColor=white)](https://claude.com/claude-code)
+  ![License](https://img.shields.io/github/license/Waffelo/HydraFlasher)
+  ![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)
+  ![Raspberry Pi Pico](https://img.shields.io/badge/hardware-RP2040%20Pico-A22846?logo=raspberrypi&logoColor=white)
 
+  
 A desktop GUI for flashing SPI flash chips with [flashprog](https://flashprog.org/)
 (or flashrom) through a Raspberry Pi Pico running a modified
 [pico-serprog](https://github.com/opensensor/pico-serprog) firmware.
