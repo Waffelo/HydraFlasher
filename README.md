@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="screenshot.png" alt="HydraFlasher main window" width="720">
+</p>
+
 # HydraFlasher
 
 A desktop GUI for flashing SPI flash chips with [flashprog](https://flashprog.org/)
