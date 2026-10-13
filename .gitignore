@@ -1,0 +1,8 @@
+# Old versions / build artifacts
+OLD_Ver/
+__pycache__/
+*.pyc
+
+# Firmware lives in its own repo (serprog_fork/pico-serprog, branch "hydraflasher");
+# the Pico SDK is a separate checkout
+serprog_fork/
