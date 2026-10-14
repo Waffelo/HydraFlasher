@@ -521,16 +521,16 @@ class SocketCard(ctk.CTkFrame):
         ):
             w.bind("<Button-1>", lambda e: on_click())
         self._fonts = fonts
+        # Monospace: one character width per font, measured once. Measuring is a
+        # slow round trip into Tk, and <Configure> fires many times per resize.
+        self._char_w = tuple(max(fonts[f].measure("0"), 1) for f in ("normal", "small"))
         self._texts = ("", "")
         self._max_chars = (20, 22)
         self.bind("<Configure>", self._on_resize, add="+")
         self.set_state("unknown", "—", "not probed")
 
     def _on_resize(self, event):
-        chars = tuple(
-            max((event.width - 28) // max(self._fonts[f].measure("0"), 1), 6)
-            for f in ("normal", "small")
-        )
+        chars = tuple(max((event.width - 28) // w, 6) for w in self._char_w)
         if chars != self._max_chars:
             self._max_chars = chars
             self._apply_texts()
@@ -1161,6 +1161,13 @@ class HydraUI(ctk.CTk):
         for tag in LOG_COLORS:
             self.log.tag_config(tag, lmargin2=hang)
         self.log.configure(state="disabled")
+        # customtkinter's scrollbar ends every redraw with update_idletasks(), which
+        # forces all pending redraws of the window at once, several times per resize
+        # step. Without it the scrollbar is redrawn moments later with the rest.
+        for sb in ("_y_scrollbar", "_x_scrollbar"):
+            canvas = getattr(getattr(self.log, sb, None), "_canvas", None)
+            if canvas is not None:
+                canvas.update_idletasks = lambda: None
         self._make_log_copyable()
         self._apply_log_colors()
 
