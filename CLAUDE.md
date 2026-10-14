@@ -49,6 +49,8 @@ A new command touches three places: `serprog.h`, the hand-built `cmdmap` bitmap 
 
 **Threading.** Tk runs on the main thread. Jobs run in a worker thread started by `_start_job`, which snapshots all Tk variables into `self._job` first so the worker never touches Tk. Workers return `(ok, msg)` and update the UI only through `self.after(0, ...)`. Raise `JobAborted` or `ProgrammerError` to stop a job early.
 
+**Job queue.** There's only one bus, so jobs never run in parallel. A job started while another runs is queued with its own settings snapshot (`self._queue`, `_launch`). After each job, `_queue_continue` runs one socket scan, because the live scan is paused during jobs, and then starts the next job. Because of that, single-socket write/verify skip the "chip known / size" checks at click time when queueing (`_queue_defers_check`), and the worker checks them when the job starts (`_socket_error`). Production mode doesn't queue.
+
 **sudo.** On Linux, if the user can't open the port, flashprog runs under `sudo -S` with the password piped in through stdin. On-Pico features are then disabled, because the direct port isn't accessible.
 
 **Persisted state:**

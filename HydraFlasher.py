@@ -406,6 +406,7 @@ class SocketCard(ctk.CTkFrame):
         "pass": (T["green"], True),
         "fail": (T["red"], True),
         "busy": (T["accent"], True),
+        "queued": (T["accent"], False),
     }
 
     def __init__(
@@ -597,6 +598,11 @@ class HydraUI(ctk.CTk):
         self._job_output: List[str] = []
         self._proc: Optional[subprocess.Popen] = None
         self._abort_requested = False
+        # Jobs started while another one runs wait here (one bus, so one job at a time)
+        self._queue: List[dict] = []
+        self._queue_gen = 0  # invalidates stale "start the next job" callbacks
+        self._queue_wait_scan: Optional[int] = None
+        self._retrying = False
         self._progress_line_active = False
         self._in_step = False
         self._detail_first = False
@@ -1094,18 +1100,20 @@ class HydraUI(ctk.CTk):
             self._update_footer()
 
     def _refresh_sockets(self):
+        queued: Dict[int, int] = {}  # socket -> position of its first queued job
+        for i, entry in enumerate(self._queue):
+            if entry["cs"] is not None:
+                queued.setdefault(entry["cs"], i + 1)
         for cs in range(NUM_SLOTS):
             slot, res, card = self.slots[cs], self._socket_result[cs], self.cards[cs]
+            name = slot["name"] if slot and slot["detected"] else "…"
             broadcast_busy = (
                 CS_ALL in self._busy_sockets and slot is not None and slot["detected"]
             )
             if cs in self._busy_sockets or broadcast_busy:
-                card.set_state(
-                    "busy",
-                    slot["name"] if slot and slot["detected"] else "…",
-                    "working…",
-                    T["accent"],
-                )
+                card.set_state("busy", name, "working…", T["accent"])
+            elif cs in queued:
+                card.set_state("queued", name, f"queued #{queued[cs]}", T["accent"])
             elif slot is None:
                 card.set_state("unknown", "—", "not probed")
             elif not slot["detected"]:
@@ -1139,6 +1147,10 @@ class HydraUI(ctk.CTk):
         if CS_ALL in self._busy_sockets:
             all_card.set_state(
                 "busy", "broadcast", f"{len(detected)} chips · working…", T["accent"]
+            )
+        elif CS_ALL in queued:
+            all_card.set_state(
+                "queued", "broadcast", f"queued #{queued[CS_ALL]}", T["accent"]
             )
         elif all(s is None for s in self.slots):
             all_card.set_state("unknown", "broadcast", "probe to check")
@@ -1275,6 +1287,13 @@ class HydraUI(ctk.CTk):
         self._scan_running = False
         if results is None or self.busy:
             return
+        try:
+            self._apply_scan_results(results)
+        finally:
+            if self._queue_wait_scan is not None:
+                self._queue_next(self._queue_wait_scan)
+
+    def _apply_scan_results(self, results: List[tuple]):
         changed = False
         for cs, ident in enumerate(results):
             prev = self._socket_ident[cs]
@@ -1429,8 +1448,9 @@ class HydraUI(ctk.CTk):
         )
         sub = f" · {self._sub}" if self._sub else ""
         self.status_label.configure(text=f"{self._status}{sub}", text_color=T["accent"])
+        queued = f" · {len(self._queue)} queued" if self._queue else ""
         self.status_meta.configure(
-            text=f"({fmt_duration(time.monotonic() - self._job_started)} · esc to stop)"
+            text=f"({fmt_duration(time.monotonic() - self._job_started)}{queued} · esc to stop)"
         )
         self._render_bar(self._pct)
         self.after(120, self._tick)
@@ -1824,9 +1844,12 @@ class HydraUI(ctk.CTk):
         retry: Optional[Callable[[], None]] = None,
         title: Optional[str] = None,
         production: bool = False,
+        cs: Optional[int] = None,
     ) -> bool:
-        """Run worker() in a background thread. worker returns (success, message)."""
-        if self.busy:
+        """Run worker() in a background thread. worker returns (success, message).
+        While another job runs, the job is queued instead (except in production mode)."""
+        queue = self.busy or bool(self._queue)
+        if queue and (production or self._prod):
             self.log_line("⚠ Another operation is still running.", "warning")
             return False
         port = self.port_entry.get().strip()
@@ -1839,8 +1862,9 @@ class HydraUI(ctk.CTk):
         if use_sudo is None:
             return False
 
-        # Snapshot settings so the worker thread never touches Tk variables
-        self._job = {
+        # Snapshot settings so the worker thread never touches Tk variables.
+        # A queued job keeps the settings from when it was started.
+        job = {
             "port": port,
             "speed": self.spispeed_var.get(),
             "force": self.force_var.get(),
@@ -1856,17 +1880,42 @@ class HydraUI(ctk.CTk):
             "temp_files": [],
             "batch": self._prod["batch"] if (production and self._prod) else "",
         }
+        entry = {
+            "status": status,
+            "worker": worker,
+            "title": title or status.rstrip("…"),
+            "job": job,
+            "cs": cs,
+        }
+        if not queue:
+            self._launch(entry)
+            return True
+        if self._retrying:  # a chip-definition retry goes ahead of the queue
+            self._queue.insert(0, entry)
+        else:
+            self._queue.append(entry)
+        self.log_line(
+            f"{BULLET} Queued #{self._queue.index(entry) + 1}: {entry['title']}", "soft"
+        )
+        self._refresh_sockets()
+        return True
+
+    def _launch(self, entry: dict):
+        worker = entry["worker"]
+        self._job = entry["job"]
         self._job_output = []
         self._abort_requested = False
         self.busy = True
-        for btn in self._op_buttons:
-            btn.configure(state="disabled")
+        if self._prod:
+            for btn in self._op_buttons:
+                btn.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.save_config()
         self._set_led(LED["RUNNING"])
-        self._status, self._sub, self._pct = status, "", None
+        self._status, self._sub, self._pct = entry["status"], "", None
         self._job_started = time.monotonic()
-        self.log_job(title or status.rstrip("…"))
+        self.log_job(entry["title"])
+        self._refresh_sockets()
         self._tick()
 
         def run():
@@ -1886,16 +1935,56 @@ class HydraUI(ctk.CTk):
             self.after(0, self._finish_job, ok, msg)
 
         threading.Thread(target=run, daemon=True).start()
-        return True
+
+    def _queue_continue(self):
+        """After a job: rescan the sockets first, so the next queued job sees chips that
+        were swapped while the bus was busy, then start it."""
+        if self.busy or not self._queue:
+            return
+        self._queue_gen += 1
+        gen = self._queue_gen
+        port = self.port_entry.get().strip()
+        if not (self._port_connected and port and self._port_accessible(port)):
+            self.after(0, self._queue_next, gen)  # no direct access (e.g. sudo)
+            return
+        self._queue_wait_scan = gen
+        if not self._scan_running:
+            self._scan_running = True
+            threading.Thread(
+                target=self._scan_worker, args=(port,), daemon=True
+            ).start()
+        self.after(3000, self._queue_next, gen)  # in case the scan fails
+
+    def _queue_next(self, gen: int):
+        if gen != self._queue_gen or self.busy or not self._queue:
+            return
+        self._queue_gen += 1
+        self._queue_wait_scan = None
+        self._launch(self._queue.pop(0))
+
+    def _clear_queue(self):
+        if self._queue:
+            self.log_line(f"⚠ Cleared {len(self._queue)} queued job(s).", "warning")
+        self._queue.clear()
+        self._queue_gen += 1
+        self._queue_wait_scan = None
+        if not self.busy:
+            self.stop_button.configure(state="disabled")
+        self._refresh_sockets()
 
     def _finish_job(self, ok: bool, msg: str):
+        self._report_job(ok, msg)
+        self._queue_continue()
+
+    def _report_job(self, ok: bool, msg: str):
         self.busy = False
         self._proc = None
         self._busy_sockets.clear()
         self._refresh_sockets()
         for btn in self._op_buttons:
             btn.configure(state="normal")
-        self.stop_button.configure(state="disabled")
+        if not self._queue:
+            self.stop_button.configure(state="disabled")
         took = f"(took {fmt_duration(time.monotonic() - self._job_started)})"
 
         text = "".join(self._job_output)
@@ -2060,9 +2149,34 @@ class HydraUI(ctk.CTk):
         self.after(0, self.log_detail, text, tag)
 
     def stop(self):
-        if not self.busy:
+        if self._queue:
+            n = len(self._queue)
+            # (label, clear the queue, stop the running job)
+            options = [(f"Clear the queue ({n} waiting)", True, False)]
+            if self.busy:
+                options = [
+                    ("Stop the current job only", False, True),
+                    (f"Stop and clear the queue ({n} waiting)", True, True),
+                ]
+            options.append(("Keep running", False, False))
+            idx = self._choose(
+                "Stop operation",
+                f"{n} queued job(s) waiting.\n\n"
+                "Interrupting an erase or write leaves the chip(s) partially programmed.",
+                [o[0] for o in options],
+                danger=True,
+                default=len(options) - 1,
+            )
+            if idx is None:
+                return
+            _, clear, stop = options[idx]
+            if clear:
+                self._clear_queue()
+            if not (stop and self.busy):
+                return
+        elif not self.busy:
             return
-        if not self._ask(
+        elif not self._ask(
             "Stop operation",
             "Stop the running operation?\n\n"
             "Interrupting an erase or write leaves the chip(s) partially programmed.",
@@ -2139,7 +2253,11 @@ class HydraUI(ctk.CTk):
             return
         self.chip_override.set(chips[idx])
         self.log_line(f"→ Selected chip: {chips[idx]} – retrying", "info")
-        retry()
+        self._retrying = True
+        try:
+            retry()
+        finally:
+            self._retrying = False
 
     # ====================== Flash log (traceability) ======================
     def _record(
@@ -2591,6 +2709,23 @@ class HydraUI(ctk.CTk):
             return None
         return slot
 
+    def _queue_defers_check(self) -> bool:
+        """A job queued now runs later: sockets aren't scanned while the bus is busy, so
+        a chip inserted meanwhile isn't known yet. The job checks it when it starts."""
+        return (self.busy or bool(self._queue)) and not self._prod
+
+    def _socket_error(self, cs: int, size: int, what: str) -> Optional[str]:
+        """Why an image of `size` bytes can't go to/against CS<cs> (worker thread)."""
+        slot = self.slots[cs]
+        if not slot or not slot["detected"]:
+            return f"No chip on CS{cs} – nothing {what}."
+        if slot["size_kb"] and slot["size_kb"] * 1024 != size:
+            return (
+                f"Image is {human_size(size)} but CS{cs} is "
+                f"{human_size(slot['size_kb'] * 1024)} – nothing {what}."
+            )
+        return None
+
     def _require_same_type(self) -> Optional[List[dict]]:
         detected = self._detected_slots()
         err = self._same_type_error(detected)
@@ -2628,6 +2763,7 @@ class HydraUI(ctk.CTk):
             f"Probing CS{cs}…",
             worker,
             retry=lambda: self._start_probe(cs),
+            cs=cs,
             title=f"Probe CS{cs}",
         )
 
@@ -2646,7 +2782,9 @@ class HydraUI(ctk.CTk):
                 f"Probe complete — {len(detected)}/{NUM_SLOTS} sockets populated.",
             )
 
-        self._start_job("Probing sockets…", worker, title="Probe all sockets")
+        self._start_job(
+            "Probing sockets…", worker, title="Probe all sockets", cs=CS_ALL
+        )
 
     def read(self):
         cs = self._selected_cs()
@@ -2679,6 +2817,7 @@ class HydraUI(ctk.CTk):
             f"Reading CS{cs}…",
             worker,
             retry=lambda: self._start_read(path, cs),
+            cs=cs,
             title=f"Read CS{cs} → {os.path.basename(path)}",
         )
 
@@ -2721,6 +2860,7 @@ class HydraUI(ctk.CTk):
             "Reading all chips…",
             worker,
             retry=lambda: self._start_read_all(folder),
+            cs=CS_ALL,
             title=f"Read all chips → {folder}",
         )
 
@@ -2759,6 +2899,7 @@ class HydraUI(ctk.CTk):
             f"Erasing CS{cs}…",
             worker,
             retry=lambda: self._start_erase(cs),
+            cs=cs,
             title=f"Erase CS{cs}",
         )
 
@@ -2778,6 +2919,7 @@ class HydraUI(ctk.CTk):
             "Erasing all chips…",
             worker,
             retry=lambda: self._start_erase_all(expected_key),
+            cs=CS_ALL,
             title="Erase all chips (broadcast)",
         )
 
@@ -2801,6 +2943,8 @@ class HydraUI(ctk.CTk):
                 return
             chip_size = detected[0]["size_kb"] * 1024
             target = f"ALL {len(detected)} chips (CS{', CS'.join(str(d['cs']) for d in detected)})"
+        elif self._queue_defers_check():
+            chip_size, target = None, f"CS{cs} (checked when its turn comes)"
         else:
             slot = self._require_probed(cs)
             if not slot:
@@ -2808,11 +2952,12 @@ class HydraUI(ctk.CTk):
             chip_size = slot["size_kb"] * 1024
             target = f"CS{cs} ({slot['name']})"
 
-        adjusted = self._adjust_file_size(path, chip_size)
+        adjusted = self._adjust_file_size(path, chip_size) if chip_size else path
         if not adjusted:
             return
+        queued = " (queued)" if (self.busy or self._queue) else ""
         if not self._ask(
-            "Write",
+            "Write" + queued,
             f"Flash {os.path.basename(adjusted)}\nto {target}?\n\n"
             "A wrong file can brick the device!",
             yes="Flash it",
@@ -2828,6 +2973,9 @@ class HydraUI(ctk.CTk):
     def _start_write(self, path: str, cs: int, production: bool = False) -> bool:
         def worker():
             data = open(path, "rb").read()
+            err = self._socket_error(cs, len(data), "written")
+            if err:
+                return False, err
             crc = zlib.crc32(data) & 0xFFFFFFFF
             plan = self._plan(data)
             pico_verify = self._job["pico"] and not self._job["noverify"]
@@ -2890,6 +3038,7 @@ class HydraUI(ctk.CTk):
             f"Writing CS{cs}…",
             worker,
             retry=lambda: self._start_write(path, cs, production),
+            cs=cs,
             title=f"Write {os.path.basename(path)} → CS{cs}",
             production=production,
         )
@@ -3008,6 +3157,7 @@ class HydraUI(ctk.CTk):
             "Writing all chips…",
             worker,
             retry=lambda: self._start_write_all(path, expected_key, production),
+            cs=CS_ALL,
             title=f"Write {os.path.basename(path)} → all chips",
             production=production,
         )
@@ -3027,12 +3177,14 @@ class HydraUI(ctk.CTk):
             if not detected:
                 return
             chip_size = detected[0]["size_kb"] * 1024
+        elif self._queue_defers_check():
+            chip_size = None
         else:
             slot = self._require_probed(cs)
             if not slot:
                 return
             chip_size = slot["size_kb"] * 1024
-        adjusted = self._adjust_file_size(path, chip_size)
+        adjusted = self._adjust_file_size(path, chip_size) if chip_size else path
         if not adjusted:
             return
         if cs == CS_ALL:
@@ -3043,6 +3195,9 @@ class HydraUI(ctk.CTk):
     def _start_verify(self, path: str, cs: int):
         def worker():
             data = open(path, "rb").read()
+            err = self._socket_error(cs, len(data), "verified")
+            if err:
+                return False, err
             slot = self.slots[cs] or {"cs": cs, "name": f"CS{cs}"}
             if self._job["pico"]:
                 ok = self._crc_verify(data, [slot], "verify", path)[0][2]
@@ -3066,6 +3221,7 @@ class HydraUI(ctk.CTk):
             f"Verifying CS{cs}…",
             worker,
             retry=lambda: self._start_verify(path, cs),
+            cs=cs,
             title=f"Verify CS{cs} against {os.path.basename(path)}",
         )
 
@@ -3095,6 +3251,7 @@ class HydraUI(ctk.CTk):
             "Verifying all chips…",
             worker,
             retry=lambda: self._start_verify_all(path),
+            cs=CS_ALL,
             title=f"Verify all chips against {os.path.basename(path)}",
         )
 
@@ -3113,7 +3270,8 @@ class HydraUI(ctk.CTk):
             )
             self._update_footer()
             return
-        if self.busy:
+        if self.busy or self._queue:
+            self.log_line("⚠ Wait for the running/queued jobs first.", "warning")
             self.production_var.set(False)
             return
         path = self._ask_open_file(
@@ -3288,18 +3446,24 @@ class HydraUI(ctk.CTk):
             "dim",
         )
         self.log_line(" 4. Flashing many chips? Turn on production mode", "dim")
+        self.log_line(
+            " 5. Busy? Start jobs on other sockets anyway – they queue up and run in turn",
+            "dim",
+        )
 
     def _on_closing(self):
-        if self.busy:
+        if self.busy or self._queue:
+            queued = f"\n{len(self._queue)} queued job(s) won't run." if self._queue else ""
             if not self._ask(
                 "Operation running",
                 "An operation is still running.\n"
-                "Quit anyway? This may leave chip(s) partially programmed.",
+                f"Quit anyway? This may leave chip(s) partially programmed.{queued}",
                 yes="Quit",
                 no="Keep running",
                 danger=True,
             ):
                 return
+            self._queue.clear()
             self._abort_requested = True
             if self._proc:
                 try:
