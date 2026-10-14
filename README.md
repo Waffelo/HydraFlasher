@@ -1,4 +1,4 @@
-
+<img src="logo-mark.png" alt="HydraFlasher logo" align="right" width="120">
 
 # HydraFlasher
   [![Made with Claude Code](https://img.shields.io/badge/Made%20with-Claude%20Code-D97757?style=flat&logo=claude&logoColor=white)](https://claude.com/claude-code)
