@@ -277,6 +277,12 @@ def block_ranges(
     return used, unused
 
 
+def is_generic_chip(name: str) -> bool:
+    """flashprog's catch-all definitions for chips it doesn't support."""
+    name = name.lower()
+    return name.startswith("unknown ") and "spi chip" in name
+
+
 def merge_ranges(ranges: Sequence[Range]) -> List[Range]:
     merged: List[Range] = []
     for start, end in sorted(ranges):
@@ -356,7 +362,9 @@ class Programmer:
     def identify(self, cs: int) -> Tuple[Optional[str], Optional[str]]:
         """(JEDEC ID, unique ID) of the chip in a socket, (None, None) if empty."""
         jedec = self.spi(cs, b"\x9f", 3)
-        if jedec in (b"\xff\xff\xff", b"\x00\x00\x00"):
+        # No manufacturer is 00 or FF: empty socket, or a garbled read (chip still
+        # being seated, bus contention)
+        if jedec[0] in (0x00, 0xFF):
             return None, None
         uid = None
         if jedec[0] == 0xEF:  # Winbond: 64-bit unique ID (4Bh)
@@ -563,8 +571,16 @@ class HydraUI(ctk.CTk):
         self.cfg = self.load_config()
         self.last_dir = self.cfg.get("last_dir", os.path.expanduser("~"))
         self.recent_files: List[str] = self.cfg.get("recent_files", [])[:10]
-        # JEDEC ID -> {"chips": [...], "size_kb": n}, learned from flashprog probes
-        self.jedec_cache: Dict[str, dict] = self.cfg.get("jedec_cache", {})
+        # JEDEC ID -> {"chips": [...], "size_kb": n}, learned from flashprog probes.
+        # Drops entries older versions learned from garbled IDs or catch-all definitions.
+        self.jedec_cache: Dict[str, dict] = {
+            jedec: entry
+            for jedec, entry in self.cfg.get("jedec_cache", {}).items()
+            if re.fullmatch(r"[0-9A-F]{6}", jedec)
+            and jedec[:2] not in ("00", "FF")
+            and entry.get("chips")
+            and not any(is_generic_chip(c) for c in entry["chips"])
+        }
 
         self.cs_map = {f"{i + 1} (CS{i})": i for i in range(NUM_SLOTS)}
         self.cs_map[CS_ALL_LABEL] = CS_ALL
@@ -607,6 +623,7 @@ class HydraUI(ctk.CTk):
         self._queue_gen = 0  # invalidates stale "start the next job" callbacks
         self._queue_wait_scan: Optional[int] = None
         self._retrying = False
+        self._job_key: Optional[tuple] = None  # key of the running job
         self._progress_line_active = False
         self._in_step = False
         self._detail_first = False
@@ -903,6 +920,11 @@ class HydraUI(ctk.CTk):
             card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 8, 0))
             row.grid_columnconfigure(i, weight=1, uniform="sock")
             self.cards[cs] = card
+        # Filled in while jobs run; its space stays reserved so the layout doesn't jump
+        self.busy_banner = ctk.CTkLabel(
+            parent, text="", font=self.fonts["bold"], text_color=T["red"], height=18
+        )
+        self.busy_banner.pack(fill="x", pady=(8, 0))
         self.cs_display_var.trace_add("write", lambda *a: self._refresh_selection())
         self._refresh_selection()
 
@@ -1129,6 +1151,10 @@ class HydraUI(ctk.CTk):
                 card.set_state("unknown", "—", "not probed")
             elif not slot["detected"]:
                 card.set_state("empty", "empty", "no chip detected")
+            elif slot.get("unsupported"):
+                card.set_state(
+                    "warn", "unsupported chip", "no flashprog definition", T["red"]
+                )
             else:
                 size = human_size(slot["size_kb"] * 1024) if slot["size_kb"] else "?"
                 if res == "pass":
@@ -1307,6 +1333,8 @@ class HydraUI(ctk.CTk):
     def _apply_scan_results(self, results: List[tuple]):
         changed = False
         unknown = []  # sockets that got a chip flashprog hasn't identified yet
+        override = self.chip_override.get()
+        misfit = []  # sockets that got a known chip the override isn't a definition of
         for cs, ident in enumerate(results):
             prev = self._socket_ident[cs]
             if ident == prev:
@@ -1318,6 +1346,8 @@ class HydraUI(ctk.CTk):
             self.slots[cs] = slot
             if ident[0] and not slot["chips"]:
                 unknown.append(cs)
+            elif ident[0] and override not in ("Auto-detect", *slot["chips"]):
+                misfit.append(cs)
             if not ident[0]:
                 self._emptied_since_batch.add(cs)
             if prev is _UNSCANNED:
@@ -1329,14 +1359,15 @@ class HydraUI(ctk.CTk):
                 )
             else:
                 self.log_line(f"{BULLET} CS{cs} chip removed", "dim")
-        # A chip override is meant for a known chip. With it, flashprog only tries that
-        # one definition, so an unknown chip would never get identified.
-        override = self.chip_override.get()
-        if unknown and override != "Auto-detect":
+        # With a chip override flashprog only tries that one definition, so a chip it
+        # doesn't fit (or one flashprog hasn't identified yet) would never be detected
+        if override != "Auto-detect" and (unknown or misfit):
             self.chip_override.set("Auto-detect")
-            sockets = ", ".join(f"CS{cs}" for cs in unknown)
+            why = [f"unknown chip on CS{cs}" for cs in unknown] + [
+                f"CS{cs} holds {self.slots[cs]['name']}" for cs in misfit
+            ]
             self.log_line(
-                f"→ Unknown chip on {sockets} – chip override {override} reset to Auto-detect",
+                f"→ Chip override {override} doesn't fit ({'; '.join(why)}) – reset to Auto-detect",
                 "info",
             )
         if unknown:
@@ -1356,7 +1387,9 @@ class HydraUI(ctk.CTk):
             else (None, None)
         )
         info["jedec"], info["uid"] = jedec, uid
-        if jedec and info["chips"]:
+        # Only learn from auto-detect runs: with -c flashprog reports just the forced
+        # definition, which would hide that several definitions match this chip
+        if jedec and info["chips"] and self._job.get("chip", "Auto-detect") == "Auto-detect":
             self.jedec_cache[jedec] = {
                 "chips": info["chips"],
                 "size_kb": info["size_kb"],
@@ -1872,12 +1905,21 @@ class HydraUI(ctk.CTk):
         production: bool = False,
         cs: Optional[int] = None,
         front: bool = False,
+        key: Optional[tuple] = None,
     ) -> bool:
         """Run worker() in a background thread. worker returns (success, message).
-        While another job runs, the job is queued instead (except in production mode)."""
+        While another job runs, the job is queued instead (except in production mode).
+        key identifies the job (default: its title) to refuse starting it twice."""
         queue = self.busy or bool(self._queue)
         if queue and (production or self._prod):
             self.log_line("⚠ Another operation is still running.", "warning")
+            return False
+        title = title or status.rstrip("…")
+        key = key or (title,)
+        if key in {e["key"] for e in self._queue} or (
+            self.busy and key == self._job_key
+        ):
+            self.log_line(f"⚠ Already running or queued: {title}", "warning")
             return False
         port = self.port_entry.get().strip()
         if not port:
@@ -1912,9 +1954,10 @@ class HydraUI(ctk.CTk):
         entry = {
             "status": status,
             "worker": worker,
-            "title": title or status.rstrip("…"),
+            "title": title,
             "job": job,
             "cs": cs,
+            "key": key,
         }
         if not queue:
             self._launch(entry)
@@ -1927,12 +1970,13 @@ class HydraUI(ctk.CTk):
             f"{BULLET} Queued #{self._queue.index(entry) + 1}: {entry['title']}", "soft"
         )
         self._refresh_sockets()
-        self._refresh_op_buttons()
+        self._refresh_busy_ui()
         return True
 
     def _launch(self, entry: dict):
         worker = entry["worker"]
         self._job = entry["job"]
+        self._job_key = entry["key"]
         # Queued for a chip inserted mid-job (definitions unknown back then): reuse the
         # chip picked since, if it fits the chip the between-jobs scan found
         cs, override = entry["cs"], self.chip_override.get()
@@ -1957,7 +2001,7 @@ class HydraUI(ctk.CTk):
         self._job_started = time.monotonic()
         self.log_job(entry["title"])
         self._refresh_sockets()
-        self._refresh_op_buttons()
+        self._refresh_busy_ui()
         self._tick()
 
         def run():
@@ -2013,7 +2057,7 @@ class HydraUI(ctk.CTk):
         if not self.busy:
             self.stop_button.configure(state="disabled")
         self._refresh_sockets()
-        self._refresh_op_buttons()
+        self._refresh_busy_ui()
 
     def _finish_job(self, ok: bool, msg: str):
         self._report_job(ok, msg)
@@ -2028,7 +2072,7 @@ class HydraUI(ctk.CTk):
             btn.configure(state="normal")
         if not self._queue:
             self.stop_button.configure(state="disabled")
-        self._refresh_op_buttons()
+        self._refresh_busy_ui()
         took = f"(took {fmt_duration(time.monotonic() - self._job_started)})"
 
         text = "".join(self._job_output)
@@ -2524,13 +2568,20 @@ class HydraUI(ctk.CTk):
     @staticmethod
     def _parse_probe(text: str, cs: int) -> dict:
         found = FOUND_RE.findall(text)
-        chips = list(dict.fromkeys(name for _, name, _ in found))
+        # flashprog's catch-all definitions ("unknown SPI chip (RDID)", "unknown Winbond
+        # (ex Nexcom) SPI chip", ...) mean it has no real definition: never learn those
+        real = [f for f in found if not is_generic_chip(f[1])]
+        chips = list(dict.fromkeys(name for _, name, _ in real))
+        unsupported = bool(found) and not real
         return {
             "cs": cs,
             "detected": bool(found),
             "chips": chips,
-            "name": " / ".join(chips) if chips else "NOT DETECTED",
-            "size_kb": int(found[0][2]) if found else None,
+            "name": " / ".join(chips)
+            if chips
+            else ("unsupported chip" if unsupported else "NOT DETECTED"),
+            "size_kb": int(real[0][2]) if real else None,
+            "unsupported": unsupported,
         }
 
     @staticmethod
@@ -2542,9 +2593,19 @@ class HydraUI(ctk.CTk):
     def _detected_slots(self) -> List[dict]:
         return [d for d in self.slots if d and d["detected"]]
 
+    @staticmethod
+    def _unsupported_msg(cs: int) -> str:
+        return (
+            f"CS{cs} holds an unsupported chip: flashprog has no definition for it, "
+            "so it can't be read, erased or written."
+        )
+
     def _same_type_error(self, detected: List[dict]) -> Optional[str]:
         if not detected:
             return "No chips detected. Insert chips or probe with ALL selected first."
+        bad = next((d for d in detected if d.get("unsupported")), None)
+        if bad:
+            return self._unsupported_msg(bad["cs"])
         if (
             len(
                 {
@@ -2769,6 +2830,9 @@ class HydraUI(ctk.CTk):
 
     def _require_probed(self, cs: int) -> Optional[dict]:
         slot = self.slots[cs] if cs < NUM_SLOTS else None
+        if slot and slot.get("unsupported"):
+            self._alert("Unsupported chip", self._unsupported_msg(cs), error=True)
+            return None
         if not slot or not slot["detected"] or not slot["size_kb"]:
             self._alert(
                 "Probe required",
@@ -2784,10 +2848,13 @@ class HydraUI(ctk.CTk):
         self.log_line(f"⚠ {QUEUE_BLOCKED[op]}", "warning")
         return True
 
-    def _refresh_op_buttons(self):
-        """Grey out the operations in QUEUE_BLOCKED while jobs run or are queued. They
-        stay clickable so a click can tell why it does nothing."""
+    def _refresh_busy_ui(self):
+        """While jobs run or are queued: show the hands-off banner and grey out the
+        operations in QUEUE_BLOCKED (still clickable, so a click can tell why)."""
         active = self.busy or bool(self._queue)
+        self.busy_banner.configure(
+            text="DO NOT remove or add chips while tasks run." if active else ""
+        )
         for name, btn in self._op_button_by_name.items():
             if name not in QUEUE_BLOCKED:
                 continue
@@ -2810,6 +2877,8 @@ class HydraUI(ctk.CTk):
         slot = self.slots[cs]
         if not slot or not slot["detected"]:
             return f"No chip on CS{cs} – nothing {what}."
+        if slot.get("unsupported"):
+            return f"CS{cs} holds an unsupported chip – nothing {what}."
         if slot["size_kb"] and slot["size_kb"] * 1024 != size:
             return (
                 f"Image is {human_size(size)} but CS{cs} is "
@@ -2843,6 +2912,8 @@ class HydraUI(ctk.CTk):
             self._store_slot(cs, slot)
             if not slot["detected"]:
                 return False, f"No chip detected on CS{cs}."
+            if slot["unsupported"]:
+                return False, self._unsupported_msg(cs)
             if rc != 0:
                 return False, f"Probe of CS{cs} failed."
             size = (
@@ -2866,18 +2937,27 @@ class HydraUI(ctk.CTk):
         names = ", ".join(f"CS{cs}" for cs in sockets)
 
         def worker():
-            found, missed = [], []
+            found, unsupported, missed = [], [], []
             for cs in sockets:
                 # _exec stores what flashprog found. Several matching definitions are
                 # fine here: the chip is identified, a job on it asks which one to use.
                 _, text = self._exec([], cs)
                 slot = self._parse_probe(text, cs)
-                if slot["detected"]:
+                if slot["unsupported"]:
+                    unsupported.append(f"CS{cs}")
+                elif slot["detected"]:
                     found.append(f"CS{cs}: {slot['name']}")
                 else:
                     missed.append(f"CS{cs}")
+            problems = []
+            if unsupported:
+                problems.append(
+                    f"Unsupported chip on {', '.join(unsupported)} – flashprog has no definition for it."
+                )
             if missed:
-                return False, f"flashprog could not identify the chip on {', '.join(missed)}."
+                problems.append(f"flashprog found no chip on {', '.join(missed)}.")
+            if problems:
+                return False, " ".join(problems)
             return True, "Identified " + " · ".join(found)
 
         self._start_job(
@@ -2938,6 +3018,7 @@ class HydraUI(ctk.CTk):
             f"Reading CS{cs}…",
             worker,
             retry=lambda: self._start_read(path, cs),
+            key=("read", cs, path),
             cs=cs,
             title=f"Read CS{cs} → {os.path.basename(path)}",
         )
@@ -2981,6 +3062,7 @@ class HydraUI(ctk.CTk):
             "Reading all chips…",
             worker,
             retry=lambda: self._start_read_all(folder),
+            key=("read", CS_ALL, folder),
             cs=CS_ALL,
             title=f"Read all chips → {folder}",
         )
@@ -3159,6 +3241,7 @@ class HydraUI(ctk.CTk):
             f"Writing CS{cs}…",
             worker,
             retry=lambda: self._start_write(path, cs, production),
+            key=("write", cs, path),
             cs=cs,
             title=f"Write {os.path.basename(path)} → CS{cs}",
             production=production,
@@ -3278,6 +3361,7 @@ class HydraUI(ctk.CTk):
             "Writing all chips…",
             worker,
             retry=lambda: self._start_write_all(path, expected_key, production),
+            key=("write", CS_ALL, path),
             cs=CS_ALL,
             title=f"Write {os.path.basename(path)} → all chips",
             production=production,
@@ -3342,6 +3426,7 @@ class HydraUI(ctk.CTk):
             f"Verifying CS{cs}…",
             worker,
             retry=lambda: self._start_verify(path, cs),
+            key=("verify", cs, path),
             cs=cs,
             title=f"Verify CS{cs} against {os.path.basename(path)}",
         )
@@ -3372,6 +3457,7 @@ class HydraUI(ctk.CTk):
             "Verifying all chips…",
             worker,
             retry=lambda: self._start_verify_all(path),
+            key=("verify", CS_ALL, path),
             cs=CS_ALL,
             title=f"Verify all chips against {os.path.basename(path)}",
         )
@@ -3599,6 +3685,39 @@ class HydraUI(ctk.CTk):
         self.destroy()
 
 
+def acquire_instance_lock():
+    """Lock file held for the app's lifetime (the OS drops it when the process ends,
+    even on a crash). None if another instance holds it."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    f = open(os.path.join(DATA_DIR, "hydra_flasher.lock"), "a+")
+    try:
+        if platform.system() == "Windows":
+            import msvcrt
+
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
 if __name__ == "__main__":
+    # Two instances would both talk to the programmer and garble each other's commands
+    instance_lock = acquire_instance_lock()
+    if instance_lock is None:
+        root = tkinter.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "Hydra Flasher",
+            "Hydra Flasher is already running.\n\n"
+            "Use the open window – two instances would share the programmer "
+            "and corrupt each other's commands.",
+        )
+        sys.exit(1)
     app = HydraUI()
     app.mainloop()
