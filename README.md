@@ -1,10 +1,11 @@
-
+<img src="logo-mark.png" alt="HydraFlasher logo" align="right" width="120">
 
 # HydraFlasher
   [![Made with Claude Code](https://img.shields.io/badge/Made%20with-Claude%20Code-D97757?style=flat&logo=claude&logoColor=white)](https://claude.com/claude-code)
   ![License](https://img.shields.io/github/license/Waffelo/HydraFlasher)
   ![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)
   ![Raspberry Pi Pico](https://img.shields.io/badge/hardware-RP2040%20Pico-A22846?logo=raspberrypi&logoColor=white)
+  [![Static Badge](https://img.shields.io/badge/Github-Wiki-blue?style=flat&logo=github&link=https%3A%2F%2Fgithub.com%2FWaffelo%2FHydraFlasher%2Fwiki)](https://github.com/Waffelo/HydraFlasher/wiki)
 
   
 A desktop GUI for flashing SPI flash chips with [flashprog](https://flashprog.org/)
@@ -15,9 +16,14 @@ The firmware adds up to six chip-select lines, so one Pico can serve several
 sockets: HydraFlasher scans them live, flashes and verifies each chip, and logs
 every run.
 
+
+**Note that:** This is a full vibe coded project for my work. I do not prefer vibe coding, this is just a SNCA project so I can make my work easier and faster..
+
 <p align="center">
-  <img src="screenshot.png" alt="HydraFlasher main window" width="520">
+  <img src="screenshot.png" alt="HydraFlasher main window" width="621">
 </p>
+
+**User guide:** see the [wiki](https://github.com/Waffelo/HydraFlasher/wiki): features, use cases and troubleshooting.
 
 ## Layout
 
