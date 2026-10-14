@@ -1024,7 +1024,10 @@ class HydraUI(ctk.CTk):
             self._op_button_by_name[text] = btn
         # Original look, restored once a blocked operation is available again
         self._op_button_style = {
-            name: {k: btn.cget(k) for k in ("text_color", "border_color", "hover_color")}
+            name: {
+                k: btn.cget(k)
+                for k in ("fg_color", "text_color", "border_color", "hover_color")
+            }
             for name, btn in self._op_button_by_name.items()
         }
         self.write_button = self._op_buttons[-1]
@@ -1216,6 +1219,7 @@ class HydraUI(ctk.CTk):
             card.set_selected(cs == sel)
         if hasattr(self, "footer_right"):
             self._update_footer()
+        self._refresh_op_buttons()
 
     def _refresh_sockets(self):
         queued: Dict[int, int] = {}  # socket -> position of its first queued job
@@ -1286,6 +1290,7 @@ class HydraUI(ctk.CTk):
                 "broadcast",
                 f"{len(detected)} identical chip{'s' * (len(detected) > 1)}",
             )
+        self._refresh_op_buttons()  # write is greyed while ALL can't be broadcast to
 
     def _mark_busy(self, cs: int, busy: bool):
         (self._busy_sockets.add if busy else self._busy_sockets.discard)(cs)
@@ -2938,23 +2943,40 @@ class HydraUI(ctk.CTk):
         return True
 
     def _refresh_busy_ui(self):
-        """While jobs run or are queued: show the hands-off banner and grey out the
-        operations in QUEUE_BLOCKED (still clickable, so a click can tell why)."""
+        """While jobs run or are queued: show the hands-off banner."""
         active = self.busy or bool(self._queue)
         self.busy_banner.configure(
             text="DO NOT remove or add chips while tasks run." if active else ""
         )
+        self._refresh_op_buttons()
+
+    def _broadcast_write_error(self) -> Optional[str]:
+        """Why write can't go to ALL right now (None if it can, or ALL isn't the target)."""
+        if self._selected_cs() != CS_ALL:
+            return None
+        return self._same_type_error(self._detected_slots())
+
+    def _refresh_op_buttons(self):
+        """Grey out operation buttons that can't be used right now: the ones in
+        QUEUE_BLOCKED while jobs run or wait, and write while the chips can't be
+        broadcast to. They stay clickable, so a click can tell why."""
+        if not hasattr(self, "_op_button_by_name"):
+            return  # still building the window
+        greyed = set(QUEUE_BLOCKED) if (self.busy or self._queue) else set()
+        if self._broadcast_write_error():
+            greyed.add("write")
         for name, btn in self._op_button_by_name.items():
-            if name not in QUEUE_BLOCKED:
-                continue
-            if active:
+            style = self._op_button_style[name]
+            if name in greyed:
+                bg = style["fg_color"] if style["fg_color"] == "transparent" else T["panel_hi"]
                 btn.configure(
+                    fg_color=bg,
                     text_color=T["faint"],
                     border_color=T["border"],
-                    hover_color=T["panel"],
+                    hover_color=T["panel"] if bg == "transparent" else bg,
                 )
             else:
-                btn.configure(**self._op_button_style[name])
+                btn.configure(**style)
 
     def _queue_defers_check(self) -> bool:
         """A job queued now runs later: sockets aren't scanned while the bus is busy, so
@@ -3218,6 +3240,10 @@ class HydraUI(ctk.CTk):
     def write(self):
         if self._prod:
             self._run_batch()
+            return
+        # Greyed for ALL when the chips can't be broadcast to: say why before asking
+        # for a file
+        if self._selected_cs() == CS_ALL and not self._require_same_type():
             return
         path = self._ask_open_file(
             "Select file to flash",
