@@ -1861,6 +1861,8 @@ class HydraUI(ctk.CTk):
         use_sudo = self._prepare_access(port)
         if use_sudo is None:
             return False
+        if not self._pick_chip_definition(cs):
+            return False
 
         # Snapshot settings so the worker thread never touches Tk variables.
         # A queued job keeps the settings from when it was started.
@@ -1903,6 +1905,17 @@ class HydraUI(ctk.CTk):
     def _launch(self, entry: dict):
         worker = entry["worker"]
         self._job = entry["job"]
+        # Queued for a chip inserted mid-job (definitions unknown back then): reuse the
+        # chip picked since, if it fits the chip the between-jobs scan found
+        cs, override = entry["cs"], self.chip_override.get()
+        slot = self.slots[cs] if cs is not None and cs < NUM_SLOTS else None
+        if (
+            self._job["chip"] == "Auto-detect"
+            and override != "Auto-detect"
+            and slot
+            and override in slot["chips"]
+        ):
+            self._job["chip"] = override
         self._job_output = []
         self._abort_requested = False
         self.busy = True
@@ -2225,6 +2238,30 @@ class HydraUI(ctk.CTk):
             r"(Reading|Erasing|Writing|Verifying).*?(\d+(?:\.\d+)?)\s*%", line, re.I
         )
         return float(m.group(2)) if m else None
+
+    def _pick_chip_definition(self, cs: Optional[int]) -> bool:
+        """Several chip definitions match the target: pick one now rather than when the
+        job runs, which for a queued job can be much later. False if cancelled."""
+        if cs is None or self.chip_override.get() != "Auto-detect":
+            return True
+        slots = self._detected_slots() if cs == CS_ALL else [self.slots[cs]]
+        chips = next((s["chips"] for s in slots if s and s["detected"]), [])
+        if len(chips) < 2:
+            return True
+        self._update_chip_list(chips)
+        where = "the chips" if cs == CS_ALL else f"the chip on CS{cs}"
+        idx = self._choose(
+            "Choose chip definition",
+            f"Multiple flash chip definitions match {where}.\n"
+            "Pick the one printed on the chip:",
+            chips,
+        )
+        if idx is None:
+            self.log_line("✕ Chip selection cancelled.", "error")
+            return False
+        self.chip_override.set(chips[idx])
+        self.log_line(f"→ Selected chip: {chips[idx]}", "info")
+        return True
 
     def _prompt_chip_selection(self, text: str, retry: Callable[[], None]):
         chips = []
