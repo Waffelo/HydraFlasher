@@ -145,6 +145,82 @@ MONO_FONTS = [
 ]
 SPINNER = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"]
 BULLET = "⏺" if platform.system() == "Darwin" else "●"
+
+# Header logo: the hydra mark from logo.svg (group g34, no wordmark/background),
+# as PNGs at 1x and 2x so the GUI stays a single file. Regenerate with e.g.
+#   inkscape logo.svg --export-id=g34 --export-id-only --export-height=20 \
+#     --export-background-opacity=0 --export-filename=logo20.png
+LOGO_PNG = {
+    1: (
+        "iVBORw0KGgoAAAANSUhEUgAAABYAAAAUCAYAAACJfM0wAAAEQklEQVR42o2Ua2xTZRjH/+85b3t6"
+        "2a3bmrKtrpUJBoEQQKEMDS6EYfiCMgxfEPyCxmjkg4kElcgnozF4SRSDi5CYGBM3QvASCYZtEBcM"
+        "hFW3TlcGc3R0tGtZLxs97bm8jx92ge6ino//8z+/83+e930eRkT4v09HS+NzYHRKN2kgoWrHD/UF"
+        "26NRyi3kZf8F7moJeC+Ox5NHu4YLREQXng+8x4gdBgBDUDir6V8LU/zePhK91NafuEfTwEXBXU1N"
+        "/OnOTqNz96aNBLTrQgwxMKcssZUMsD1gFSZR9Go8vf/t7vCvRKQDAG9tbd0CAMlkMp7NZrUZ91a3"
+        "3v7D7s1RhdhjnJHXIknehQIkdfHlnu+vvPWi368CMGZ0HgwGu0ZGRtDX1wdXRQUYY/CRikZ/OZxc"
+        "Wgs2ZUxpJvLcerbU0HpLrPKRGQDJ1s1vrK2vORYcDtMD5fNIJIJQKAQAOOCR4XNYYJfvVxrPGzh9"
+        "O4OedAGQ5O3V1dVeMz1mmkSyk0s4sNp/88mHPNuOBSO3ANwrAkuSBBsDbFyGXZ6KSAR0TBAuTnKw"
+        "Ug+8ZQw+C9ksen59R8EAGENaF7hUUv/TqbZTJ+e2iJdzhhUuG3bWlmCJIgMANEH4ZGAMfZkC6hwW"
+        "jKpTrYvJEj57vA4bymrxYWgUJhgYY0REYi5YSmUnsMd7H2oS4Z3uAfwyMAxnLoODj1SixW3FRruJ"
+        "elKRVAtYbgNeaXCBhAARsYUOlXtsHOUWeVa4fCeF7T433g0sh3Na39ngmffhOpcdLy914c9MqpxN"
+        "xy4akK92PEF+u/yvQ3I3r+P2hIplFU44LMXeArGJs+HYUyf6/w4RkTmbeDFoqqDj7M0Yzg0nkFCn"
+        "rvera/x4tsEDiTGoJuH9wTR2rfR/czp+eQhAUZ/5QtAfh+I4EYogp5tF+ud/DOPbcBRvNjdiGVTE"
+        "JnLoddT0JJOYnNuKeWDNFLDKEmocCrKaAassITqZn30/ntdxUXegdzyF5qVLkNY0TgvshXlgqyyh"
+        "2efGNp8bqbyO766Pom3wzryqumMZMMbQ9PAqfUY7v2+NM5zMGa//fEPjix0YA1Bps2Dvijr0351A"
+        "umAglitA5hyVzMQL/gr47Bzu7PVD53dt3MvAFFmyr3ZD/gDAR+xCS4BmdkHEWo60ZqDU1PCoIuCU"
+        "pn5iAkgawG8qR6amAXev92OT3UTApRSFid4rHN53LngcwCQHgO6UhpM3EhCIw+FwgDEGCwO2VCpo"
+        "rrbCIUvwcGBnqYHIWAisAqi1K/OHglHJwfVLKz69NjTJPt62jo79NYaqqioQEYQQUBQFQgioqgp3"
+        "WQkCTmBDCUOltfhqZg2BMi7NLjpD0C0CJZ45c2UH2xrYcDuRy+uSJBHnXOKcM13XSQghFGVqzlVV"
+        "Na0Wi/zSKv9+d3LYMVrmWX0mPPJaWlLoiN82hkL+Ws+d9BdHrw4OTO9k+gff1vWdATJWAwAAAABJ"
+        "RU5ErkJggg=="
+    ),
+    2: (
+        "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"
+    ),
+}
 _UNSCANNED = ("?", None)
 
 
@@ -766,9 +842,20 @@ class HydraUI(ctk.CTk):
     def _create_header(self, parent):
         head = ctk.CTkFrame(parent, fg_color="transparent")
         head.pack(fill="x")
+        # A plain Tk label: CTkLabel wants a PIL-backed CTkImage, PhotoImage
+        # reads PNG (with alpha) on its own. Pick the 2x asset on HiDPI.
+        scale = 2 if ctk.ScalingTracker.get_window_scaling(self) >= 1.5 else 1
+        try:
+            self._logo_img = tkinter.PhotoImage(master=self, data=LOGO_PNG[scale])
+        except tkinter.TclError:
+            self._logo_img = None
+        if self._logo_img:
+            tkinter.Label(
+                head, image=self._logo_img, bg=T["bg"], bd=0, highlightthickness=0
+            ).pack(side="left", padx=(0, 8))
         ctk.CTkLabel(
             head,
-            text="✻ Hydra Flasher",
+            text="Hydra Flasher" if self._logo_img else "✻ Hydra Flasher",
             font=self.fonts["title"],
             text_color=T["accent"],
         ).pack(side="left")
