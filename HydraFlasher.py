@@ -1339,6 +1339,8 @@ class HydraUI(ctk.CTk):
                 f"→ Unknown chip on {sockets} – chip override {override} reset to Auto-detect",
                 "info",
             )
+        if unknown:
+            self._start_identify(unknown)
         if changed:
             self._scan_stable = 0
             self._refresh_sockets()
@@ -1869,6 +1871,7 @@ class HydraUI(ctk.CTk):
         title: Optional[str] = None,
         production: bool = False,
         cs: Optional[int] = None,
+        front: bool = False,
     ) -> bool:
         """Run worker() in a background thread. worker returns (success, message).
         While another job runs, the job is queued instead (except in production mode)."""
@@ -1916,7 +1919,7 @@ class HydraUI(ctk.CTk):
         if not queue:
             self._launch(entry)
             return True
-        if self._retrying:  # a chip-definition retry goes ahead of the queue
+        if self._retrying or front:  # e.g. a chip-definition retry goes ahead of the queue
             self._queue.insert(0, entry)
         else:
             self._queue.append(entry)
@@ -2855,6 +2858,34 @@ class HydraUI(ctk.CTk):
             retry=lambda: self._start_probe(cs),
             cs=cs,
             title=f"Probe CS{cs}",
+        )
+
+    def _start_identify(self, sockets: List[int]):
+        """Probe sockets the live scan found an unknown chip in, so flashprog names it and
+        the JEDEC cache learns it. Goes ahead of queued jobs, which then see the chip."""
+        names = ", ".join(f"CS{cs}" for cs in sockets)
+
+        def worker():
+            found, missed = [], []
+            for cs in sockets:
+                # _exec stores what flashprog found. Several matching definitions are
+                # fine here: the chip is identified, a job on it asks which one to use.
+                _, text = self._exec([], cs)
+                slot = self._parse_probe(text, cs)
+                if slot["detected"]:
+                    found.append(f"CS{cs}: {slot['name']}")
+                else:
+                    missed.append(f"CS{cs}")
+            if missed:
+                return False, f"flashprog could not identify the chip on {', '.join(missed)}."
+            return True, "Identified " + " · ".join(found)
+
+        self._start_job(
+            f"Identifying {names}…",
+            worker,
+            title=f"Identify unknown chip on {names}",
+            cs=sockets[0] if len(sockets) == 1 else None,
+            front=True,
         )
 
     def _start_probe_all(self):
