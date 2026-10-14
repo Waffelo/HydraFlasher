@@ -418,7 +418,7 @@ class SocketCard(ctk.CTkFrame):
         "pass": (T["green"], True),
         "fail": (T["red"], True),
         "busy": (T["accent"], True),
-        "queued": (T["accent"], False),
+        "queued": (T["dim"], False),
     }
 
     def __init__(
@@ -566,6 +566,9 @@ class HydraUI(ctk.CTk):
             "title": ctk.CTkFont(family=mono, size=16, weight="bold"),
             "log": ctk.CTkFont(family=mono, size=12),
         }
+        # Clock for queued sockets: Nerd Fonts have one (U+F017); plain fonts get ◷
+        # (drawn by a fallback font, fine outside aligned text)
+        self._clock = "" if "nerd" in mono.lower() else "◷"
 
         # NOTE: not "self.config" – that would shadow Tk's config() method
         self.cfg = self.load_config()
@@ -605,12 +608,12 @@ class HydraUI(ctk.CTk):
         self._port_lock = threading.Lock()
         self._fw_caps: Optional[Set[int]] = None
         self._scan_running = False
-        self._scan_stable = 0
         self._log_lock = threading.Lock()
 
         # Production mode
         self._prod: Optional[dict] = None
-        self._emptied_since_batch: Set[int] = set()
+        # JEDEC ID -> chip definition picked for it this session (see _pick_chip_definition)
+        self._chip_choice: Dict[str, str] = {}
 
         # Job state
         self.busy = False
@@ -644,7 +647,7 @@ class HydraUI(ctk.CTk):
         self.fast_verify_var = ctk.BooleanVar(value=self.cfg.get("fast_verify", True))
         self.partial_var = ctk.BooleanVar(value=self.cfg.get("partial_write", True))
         self.production_var = ctk.BooleanVar(value=False)
-        self.autostart_var = ctk.BooleanVar(value=self.cfg.get("autostart", False))
+        self.one_by_one_var = ctk.BooleanVar(value=self.cfg.get("one_by_one", False))
         self.spispeed_var = ctk.StringVar(
             value=spispeed if spispeed in SPI_SPEEDS else "16M"
         )
@@ -708,7 +711,7 @@ class HydraUI(ctk.CTk):
                 "noverify": self.noverify_var.get(),
                 "fast_verify": self.fast_verify_var.get(),
                 "partial_write": self.partial_var.get(),
-                "autostart": self.autostart_var.get(),
+                "one_by_one": self.one_by_one_var.get(),
                 "spispeed": self.spispeed_var.get(),
                 "cs": self.cs_display_var.get(),
                 "last_dir": self.last_dir,
@@ -986,15 +989,19 @@ class HydraUI(ctk.CTk):
 
         row3 = ctk.CTkFrame(panel, fg_color="transparent")
         row3.pack(fill="x", padx=14, pady=(2, 10))
-        TtyToggle(
+        self._production_toggle = TtyToggle(
             row3, "production mode", self.production_var, self.fonts["normal"]
-        ).pack(side="left", padx=(0, 18))
-        TtyToggle(
+        )
+        self._production_toggle.pack(side="left", padx=(0, 18))
+        # Only shown while ALL is the target (see _refresh_selection)
+        self._one_by_one_toggle = TtyToggle(
             row3,
-            "auto-start when all sockets refilled",
-            self.autostart_var,
+            "one-by-one",
+            self.one_by_one_var,
             self.fonts["normal"],
-        ).pack(side="left", padx=(0, 18))
+        )
+        self.one_by_one_var.trace_add("write", lambda *a: self._on_one_by_one())
+        self._refresh_selection()  # show the one-by-one toggle if ALL is the target
         self._button(
             row3, "flash log ▸", self._open_flash_log, color=T["soft"], width=120
         ).pack(side="right")
@@ -1201,13 +1208,28 @@ class HydraUI(ctk.CTk):
             )
             return
         chip = self.chip_override.get()
-        target = self._selected_cs()
-        tgt = "ALL (broadcast)" if target == CS_ALL else f"CS{target}"
         self.footer_right.configure(
-            text=f"target {tgt} · {self.spispeed_var.get()}"
+            text=f"target {self._target_label(self._selected_cs(), short=True)}"
+            f" · {self.spispeed_var.get()}"
             + ("" if chip == "Auto-detect" else f" · -c {chip}"),
             text_color=T["faint"],
         )
+
+    def _one_by_one(self, cs: Optional[int] = None) -> bool:
+        """ALL is (or cs is) the target and writes go to each socket in turn."""
+        cs = self._selected_cs() if cs is None else cs
+        return cs == CS_ALL and self.one_by_one_var.get()
+
+    def _target_label(self, cs: int, short: bool = False) -> str:
+        if cs != CS_ALL:
+            return f"CS{cs}"
+        mode = "one-by-one" if self._one_by_one(cs) else "broadcast"
+        return f"ALL ({mode})" if short else f"ALL sockets ({mode})"
+
+    def _on_one_by_one(self):
+        self._refresh_sockets()
+        self._update_footer()
+        self.save_config()
 
     # ====================== Sockets ======================
     def _select_target(self, cs: int):
@@ -1219,6 +1241,14 @@ class HydraUI(ctk.CTk):
             card.set_selected(cs == sel)
         if hasattr(self, "footer_right"):
             self._update_footer()
+        if hasattr(self, "_one_by_one_toggle"):
+            if sel == CS_ALL:
+                self._one_by_one_toggle.pack(
+                    side="left", padx=(0, 18), after=self._production_toggle
+                )
+            else:
+                self._one_by_one_toggle.pack_forget()
+            self._refresh_sockets()  # the ALL card text depends on one-by-one
         self._refresh_op_buttons()
 
     def _refresh_sockets(self):
@@ -1235,7 +1265,9 @@ class HydraUI(ctk.CTk):
             if cs in self._busy_sockets or broadcast_busy:
                 card.set_state("busy", name, "working…", T["accent"])
             elif cs in queued:
-                card.set_state("queued", name, f"queued #{queued[cs]}", T["accent"])
+                card.set_state(
+                    "queued", name, f"{self._clock} queued #{queued[cs]}", T["dim"]
+                )
             elif slot is None:
                 card.set_state("unknown", "—", "not probed")
             elif not slot["detected"]:
@@ -1270,20 +1302,27 @@ class HydraUI(ctk.CTk):
 
         all_card = self.cards[CS_ALL]
         detected = self._detected_slots()
+        usable = [d for d in detected if not d.get("unsupported")]
+        mode = "one-by-one" if self.one_by_one_var.get() else "broadcast"
         if CS_ALL in self._busy_sockets:
             all_card.set_state(
-                "busy", "broadcast", f"{len(detected)} chips · working…", T["accent"]
+                "busy", mode, f"{len(detected)} chips · working…", T["accent"]
             )
         elif CS_ALL in queued:
             all_card.set_state(
-                "queued", "broadcast", f"queued #{queued[CS_ALL]}", T["accent"]
+                "queued", mode, f"{self._clock} queued #{queued[CS_ALL]}", T["dim"]
             )
         elif all(s is None for s in self.slots):
-            all_card.set_state("unknown", "broadcast", "probe to check")
-        elif not detected:
-            all_card.set_state("empty", "broadcast", "no chips")
+            all_card.set_state("unknown", mode, "probe to check")
+        elif not usable:
+            all_card.set_state("empty", mode, "no chips")
+        elif self.one_by_one_var.get():
+            # Each socket gets its own job, so the chips may differ
+            all_card.set_state(
+                "ok", mode, f"{len(usable)} chip{'s' * (len(usable) > 1)} · in turn"
+            )
         elif self._same_type_error(detected):
-            all_card.set_state("fail", "broadcast", "chip types differ", T["red"])
+            all_card.set_state("fail", mode, "chip types differ", T["red"])
         else:
             all_card.set_state(
                 "ok",
@@ -1438,8 +1477,6 @@ class HydraUI(ctk.CTk):
                 unknown.append(cs)
             elif ident[0] and override not in ("Auto-detect", *slot["chips"]):
                 misfit.append(cs)
-            if not ident[0]:
-                self._emptied_since_batch.add(cs)
             if prev is _UNSCANNED:
                 continue
             if ident[0]:
@@ -1463,11 +1500,7 @@ class HydraUI(ctk.CTk):
         if unknown:
             self._start_identify(unknown)
         if changed:
-            self._scan_stable = 0
             self._refresh_sockets()
-        else:
-            self._scan_stable += 1
-        self._maybe_autostart()
 
     def _store_slot(self, cs: int, info: dict):
         """Save flashprog's view of a socket, and teach the JEDEC cache its name."""
@@ -2024,7 +2057,8 @@ class HydraUI(ctk.CTk):
         use_sudo = self._prepare_access(port)
         if use_sudo is None:
             return False
-        if not self._pick_chip_definition(cs):
+        chip = self._pick_chip_definition(cs)
+        if chip is None:
             return False
 
         # Snapshot settings so the worker thread never touches Tk variables.
@@ -2035,7 +2069,7 @@ class HydraUI(ctk.CTk):
             "force": self.force_var.get(),
             "progress": self.progress_var.get(),
             "noverify": self.noverify_var.get(),
-            "chip": self.chip_override.get(),
+            "chip": chip,
             "sudo": use_sudo,
             "retry": retry,
             "pico": self.fast_verify_var.get() and self._can_use_pico(port),
@@ -2191,7 +2225,6 @@ class HydraUI(ctk.CTk):
                 } or {"?": False}
             self._prod["ok"] += sum(per_socket.values())
             self._prod["fail"] += sum(not v for v in per_socket.values())
-            self._emptied_since_batch.clear()
             self._update_footer()
             msg = f"Batch #{self._prod['batch']}: {msg} · swap chips"
 
@@ -2408,15 +2441,25 @@ class HydraUI(ctk.CTk):
         )
         return float(m.group(2)) if m else None
 
-    def _pick_chip_definition(self, cs: Optional[int]) -> bool:
-        """Several chip definitions match the target: pick one now rather than when the
-        job runs, which for a queued job can be much later. False if cancelled."""
-        if cs is None or self.chip_override.get() != "Auto-detect":
-            return True
+    def _pick_chip_definition(self, cs: Optional[int]) -> Optional[str]:
+        """The chip definition (-c, or "Auto-detect") for a job on cs, None if cancelled.
+        Decided when the job is started, not when it runs (a queued job can run much
+        later), and per chip: one-by-one may queue different chip types. Order: the
+        override if it fits this chip, the choice made for this chip type before,
+        auto-detect if only one definition matches, else ask."""
+        override = self.chip_override.get()
+        if cs is None:
+            return override
         slots = self._detected_slots() if cs == CS_ALL else [self.slots[cs]]
-        chips = next((s["chips"] for s in slots if s and s["detected"]), [])
-        if len(chips) < 2:
-            return True
+        slot = next((s for s in slots if s and s["detected"]), None)
+        chips = slot["chips"] if slot else []
+        if not chips or override in chips:
+            return override  # chip not known yet (the scan resets a misfit override)
+        remembered = self._chip_choice.get(slot.get("jedec") or "")
+        if remembered in chips:
+            return remembered
+        if len(chips) == 1:
+            return "Auto-detect"
         self._update_chip_list(chips)
         where = "the chips" if cs == CS_ALL else f"the chip on CS{cs}"
         idx = self._choose(
@@ -2427,10 +2470,12 @@ class HydraUI(ctk.CTk):
         )
         if idx is None:
             self.log_line("✕ Chip selection cancelled.", "error")
-            return False
+            return None
+        if slot.get("jedec"):
+            self._chip_choice[slot["jedec"]] = chips[idx]
         self.chip_override.set(chips[idx])
         self.log_line(f"→ Selected chip: {chips[idx]}", "info")
-        return True
+        return chips[idx]
 
     def _prompt_chip_selection(self, text: str, retry: Callable[[], None]):
         chips = []
@@ -2951,10 +2996,31 @@ class HydraUI(ctk.CTk):
         self._refresh_op_buttons()
 
     def _broadcast_write_error(self) -> Optional[str]:
-        """Why write can't go to ALL right now (None if it can, or ALL isn't the target)."""
+        """Why write can't go to ALL right now (None if it can, or ALL isn't the target).
+        One-by-one writes every usable chip on its own, so only "no chips" stops it."""
         if self._selected_cs() != CS_ALL:
             return None
-        return self._same_type_error(self._detected_slots())
+        detected = self._detected_slots()
+        if self._one_by_one():
+            if any(not d.get("unsupported") for d in detected):
+                return None
+            return self._same_type_error(detected) or "No supported chips inserted."
+        return self._same_type_error(detected)
+
+    def _one_by_one_targets(self) -> Optional[List[dict]]:
+        """The sockets a one-by-one write goes to (unsupported chips skipped), or None
+        (after telling the user) if there are none."""
+        detected = self._detected_slots()
+        usable = [d for d in detected if not d.get("unsupported")]
+        if not usable:
+            msg = self._broadcast_write_error() or "No chips detected."
+            self._alert("Nothing to write", msg, error=True)
+            self.log_line(f"✕ {msg.splitlines()[0]}", "error")
+            return None
+        for d in detected:
+            if d.get("unsupported"):
+                self.log_line(f"⚠ CS{d['cs']} skipped: unsupported chip", "warning")
+        return usable
 
     def _refresh_op_buttons(self):
         """Grey out operation buttons that can't be used right now: the ones in
@@ -3241,10 +3307,15 @@ class HydraUI(ctk.CTk):
         if self._prod:
             self._run_batch()
             return
-        # Greyed for ALL when the chips can't be broadcast to: say why before asking
-        # for a file
-        if self._selected_cs() == CS_ALL and not self._require_same_type():
-            return
+        # Greyed for ALL when the chips can't be written: say why before asking for a file
+        if self._selected_cs() == CS_ALL:
+            err = self._broadcast_write_error()
+            if err and self._one_by_one():
+                self._alert("Nothing to write", err, error=True)
+                self.log_line(f"✕ {err.splitlines()[0]}", "error")
+                return
+            if err and not self._require_same_type():
+                return
         path = self._ask_open_file(
             "Select file to flash",
             [("Binary ROM", "*.bin *.rom"), ("All files", "*.*")],
@@ -3255,7 +3326,20 @@ class HydraUI(ctk.CTk):
     def _write_file(self, path: str):
         self._add_recent_file(path)
         cs = self._selected_cs()
-        if cs == CS_ALL:
+        if cs == CS_ALL and self._one_by_one():
+            detected = self._one_by_one_targets()
+            if not detected:
+                return
+            # Different chip sizes: no pad/truncate offer, each socket's job checks
+            # its own chip against the image when its turn comes
+            sizes = {d["size_kb"] for d in detected}
+            only = next(iter(sizes))
+            chip_size = only * 1024 if len(sizes) == 1 and only else None
+            target = (
+                f"{len(detected)} chip(s) one by one "
+                f"(CS{', CS'.join(str(d['cs']) for d in detected)})"
+            )
+        elif cs == CS_ALL:
             detected = self._require_same_type()
             if not detected:
                 return
@@ -3283,74 +3367,85 @@ class HydraUI(ctk.CTk):
             danger=True,
         ):
             return
-        if cs == CS_ALL:
+        if cs == CS_ALL and self._one_by_one():
+            # One job per socket: the first starts, the rest wait in the queue
+            for d in detected:
+                self._start_write(adjusted, d["cs"])
+        elif cs == CS_ALL:
             self._start_write_all(adjusted, self._slots_key(detected))
         else:
             self._start_write(adjusted, cs)
 
+    def _write_socket(
+        self, path: str, data: bytes, cs: int, step: Callable[[int, int, str], None]
+    ) -> Tuple[bool, str]:
+        """Blank check, write and verify one socket (worker thread).
+        step(n, total, text) logs each of these steps."""
+        err = self._socket_error(cs, len(data), "written")
+        if err:
+            return False, err
+        crc = zlib.crc32(data) & 0xFFFFFFFF
+        plan = self._plan(data)
+        pico_verify = self._job["pico"] and not self._job["noverify"]
+        steps = (
+            (["Blank check (on Pico)"] if plan else [])
+            + ["Write"]
+            + (["Verify (on Pico)"] if pico_verify else [])
+        )
+        n = iter(range(1, len(steps) + 1))
+        slot = self.slots[cs] or {"cs": cs, "name": f"CS{cs}"}
+
+        regions = None
+        if plan:
+            used, unused = plan
+            step(
+                next(n),
+                len(steps),
+                steps[0] + f" · {human_size(ranges_size(unused))} unused",
+            )
+            dirty = self._blank_check([slot], unused)
+            regions = merge_ranges(used + dirty)
+            if not regions:
+                self._detail(
+                    "image is empty (all 0xFF) and the chip is blank – nothing to write",
+                    "success",
+                )
+
+        step(
+            next(n),
+            len(steps),
+            "Write"
+            + (
+                f" {human_size(ranges_size(regions))} (used blocks)"
+                if regions is not None
+                else ""
+            ),
+        )
+        t0 = time.monotonic()
+        if regions != []:
+            extra = ["-w", path] + (self._layout_args(regions) if regions else [])
+            # With a Pico-side verify coming, flashprog doesn't need to read the chip back
+            noverify = pico_verify or self._job["noverify"]
+            rc, _ = self._exec(extra, cs, noverify=noverify)
+            if rc != 0:
+                self._record(cs, "write", False, time.monotonic() - t0, path, crc)
+                return False, f"Write to CS{cs} failed."
+        self._record(cs, "write", True, time.monotonic() - t0, path, crc)
+
+        if pico_verify:
+            step(next(n), len(steps), "Verify (on Pico)")
+            rows = self._crc_verify(data, [slot], "verify", path)
+            if not rows[0][2]:
+                return (
+                    False,
+                    f"CS{cs} does NOT match {os.path.basename(path)} after writing.",
+                )
+        return True, f"Write completed → {os.path.basename(path)} (CS{cs})"
+
     def _start_write(self, path: str, cs: int, production: bool = False) -> bool:
         def worker():
             data = open(path, "rb").read()
-            err = self._socket_error(cs, len(data), "written")
-            if err:
-                return False, err
-            crc = zlib.crc32(data) & 0xFFFFFFFF
-            plan = self._plan(data)
-            pico_verify = self._job["pico"] and not self._job["noverify"]
-            steps = (
-                (["Blank check (on Pico)"] if plan else [])
-                + ["Write"]
-                + (["Verify (on Pico)"] if pico_verify else [])
-            )
-            n = iter(range(1, len(steps) + 1))
-            slot = self.slots[cs] or {"cs": cs, "name": f"CS{cs}"}
-
-            regions = None
-            if plan:
-                used, unused = plan
-                self._step(
-                    next(n),
-                    len(steps),
-                    steps[0] + f" · {human_size(ranges_size(unused))} unused",
-                )
-                dirty = self._blank_check([slot], unused)
-                regions = merge_ranges(used + dirty)
-                if not regions:
-                    self._detail(
-                        "image is empty (all 0xFF) and the chip is blank – nothing to write",
-                        "success",
-                    )
-
-            self._step(
-                next(n),
-                len(steps),
-                "Write"
-                + (
-                    f" {human_size(ranges_size(regions))} (used blocks)"
-                    if regions is not None
-                    else ""
-                ),
-            )
-            t0 = time.monotonic()
-            if regions != []:
-                extra = ["-w", path] + (self._layout_args(regions) if regions else [])
-                # With a Pico-side verify coming, flashprog doesn't need to read the chip back
-                noverify = pico_verify or self._job["noverify"]
-                rc, _ = self._exec(extra, cs, noverify=noverify)
-                if rc != 0:
-                    self._record(cs, "write", False, time.monotonic() - t0, path, crc)
-                    return False, f"Write to CS{cs} failed."
-            self._record(cs, "write", True, time.monotonic() - t0, path, crc)
-
-            if pico_verify:
-                self._step(next(n), len(steps), "Verify (on Pico)")
-                rows = self._crc_verify(data, [slot], "verify", path)
-                if not rows[0][2]:
-                    return (
-                        False,
-                        f"CS{cs} does NOT match {os.path.basename(path)} after writing.",
-                    )
-            return True, f"Write completed → {os.path.basename(path)} (CS{cs})"
+            return self._write_socket(path, data, cs, self._step)
 
         return self._start_job(
             f"Writing CS{cs}…",
@@ -3359,6 +3454,46 @@ class HydraUI(ctk.CTk):
             key=("write", cs, path),
             cs=cs,
             title=f"Write {os.path.basename(path)} → CS{cs}",
+            production=production,
+        )
+
+    def _start_write_each(
+        self, path: str, sockets: List[int], production: bool = False
+    ) -> bool:
+        """One job writing the same image to each socket in turn (production batches
+        with one-by-one; outside production, one-by-one queues a job per socket)."""
+
+        def worker():
+            data = open(path, "rb").read()
+            crc = zlib.crc32(data) & 0xFFFFFFFF
+            failed = []
+            for i, cs in enumerate(sockets, 1):
+                self._step(i, len(sockets), f"CS{cs}")
+                rows_before = len(self._job["rows"])
+                ok, msg = self._write_socket(
+                    path, data, cs, lambda n, total, text: self._detail(text, "soft")
+                )
+                if not ok and len(self._job["rows"]) == rows_before:
+                    # Refused before writing (no chip, wrong size): still a failed part
+                    self._record(cs, "write", False, 0.0, path, crc)
+                self._detail(("✓ " if ok else "✕ ") + msg, "success" if ok else "error")
+                if not ok:
+                    failed.append(cs)
+            if failed:
+                return False, (
+                    f"{len(failed)}/{len(sockets)} socket(s) failed "
+                    f"(CS{', CS'.join(str(c) for c in failed)})."
+                )
+            return True, f"Written one by one to {len(sockets)} socket(s)."
+
+        names = ", ".join(f"CS{c}" for c in sockets)
+        return self._start_job(
+            f"Writing {len(sockets)} chip(s) one by one…",
+            worker,
+            retry=lambda: self._start_write_each(path, sockets, production),
+            key=("write", tuple(sockets), path),
+            cs=CS_ALL,
+            title=f"Write {os.path.basename(path)} → {names} (one by one)",
             production=production,
         )
 
@@ -3604,17 +3739,12 @@ class HydraUI(ctk.CTk):
             self.production_var.set(False)
             return
         cs = self._selected_cs()
-        target = "ALL sockets (broadcast)" if cs == CS_ALL else f"CS{cs}"
+        target = self._target_label(cs)
         if not self._ask(
             "Production mode",
             f"Every batch will erase, write and verify\n{os.path.basename(path)}\n"
             f"to {target} WITHOUT asking again.\n\n"
-            "Start a batch with ⏎ or the batch button"
-            + (
-                ", or automatically once all sockets are refilled."
-                if self.autostart_var.get()
-                else "."
-            ),
+            "Start a batch with ⏎ or the batch button.",
             yes="Start production",
             no="Cancel",
             danger=True,
@@ -3629,7 +3759,6 @@ class HydraUI(ctk.CTk):
             "ok": 0,
             "fail": 0,
         }
-        self._emptied_since_batch = set(range(NUM_SLOTS))
         self.write_button.configure(text="▶ run batch  ⏎")
         self.log_job(f"Production mode · {os.path.basename(path)} → {target}")
         self.log_detail(f"flash log: {FLASH_LOG}")
@@ -3645,6 +3774,20 @@ class HydraUI(ctk.CTk):
             return
         cs = self._selected_cs()
         size = os.path.getsize(path)
+        if self._one_by_one(cs):
+            # Each socket on its own: one that doesn't fit the image fails alone
+            sockets = [
+                d["cs"] for d in self._detected_slots() if not d.get("unsupported")
+            ]
+            if not sockets:
+                self._set_idle_status("No chips inserted", T["red"])
+                return
+            self._prod["batch"] += 1
+            self._update_footer()
+            if not self._start_write_each(path, sockets, production=True):
+                self._prod["batch"] -= 1
+                self._update_footer()
+            return
         if cs == CS_ALL:
             detected = self._detected_slots()
             err = self._same_type_error(detected)
@@ -3676,23 +3819,6 @@ class HydraUI(ctk.CTk):
         if not started:
             self._prod["batch"] -= 1
             self._update_footer()
-
-    def _maybe_autostart(self):
-        """Start the next batch once every socket was emptied and refilled."""
-        if not (self._prod and self.autostart_var.get()) or self.busy:
-            return
-        filled = [
-            cs
-            for cs in range(NUM_SLOTS)
-            if self._socket_ident[cs] is not _UNSCANNED and self._socket_ident[cs][0]
-        ]
-        if (
-            len(filled) == NUM_SLOTS
-            and self._emptied_since_batch >= set(range(NUM_SLOTS))
-            and self._scan_stable >= 2
-        ):
-            self.log_line(f"{BULLET} All sockets refilled – starting batch", "soft")
-            self._run_batch()
 
     # ====================== Recent Files ======================
     def _show_recent_menu(self):
