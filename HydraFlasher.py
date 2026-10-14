@@ -81,6 +81,10 @@ SCAN_SPEED_HZ = 8_000_000
 ERASE_BLOCK = 64 * 1024  # granularity of partial writes
 BLANK_CHECK_PIECE = 1024 * 1024  # granularity of the blank check
 PARTIAL_MAX_USED = 0.9  # above this fraction of used blocks, just write everything
+# Operations refused while a job runs or waits in the queue: operation -> reason
+QUEUE_BLOCKED = {
+    "probe": "Probing is not available during queue run.",
+}
 
 # Must match the firmware's USB descriptors (usb_descriptors.c)
 HYDRA_VID = 0xCAFE
@@ -990,10 +994,17 @@ class HydraUI(ctk.CTk):
             ("write", self.write, T["accent"], True),
         ]
         self._op_buttons = []
+        self._op_button_by_name: Dict[str, ctk.CTkButton] = {}
         for text, cmd, color, filled in buttons:
             btn = self._button(row, text, cmd, color=color, filled=filled)
             btn.pack(side="left", padx=(0, 8), expand=True, fill="x")
             self._op_buttons.append(btn)
+            self._op_button_by_name[text] = btn
+        # Original look, restored once a blocked operation is available again
+        self._op_button_style = {
+            name: {k: btn.cget(k) for k in ("text_color", "border_color", "hover_color")}
+            for name, btn in self._op_button_by_name.items()
+        }
         self.write_button = self._op_buttons[-1]
         self.stop_button = self._button(
             row, "■ stop", self.stop, color=T["red"], width=90
@@ -1900,6 +1911,7 @@ class HydraUI(ctk.CTk):
             f"{BULLET} Queued #{self._queue.index(entry) + 1}: {entry['title']}", "soft"
         )
         self._refresh_sockets()
+        self._refresh_op_buttons()
         return True
 
     def _launch(self, entry: dict):
@@ -1929,6 +1941,7 @@ class HydraUI(ctk.CTk):
         self._job_started = time.monotonic()
         self.log_job(entry["title"])
         self._refresh_sockets()
+        self._refresh_op_buttons()
         self._tick()
 
         def run():
@@ -1984,6 +1997,7 @@ class HydraUI(ctk.CTk):
         if not self.busy:
             self.stop_button.configure(state="disabled")
         self._refresh_sockets()
+        self._refresh_op_buttons()
 
     def _finish_job(self, ok: bool, msg: str):
         self._report_job(ok, msg)
@@ -1998,6 +2012,7 @@ class HydraUI(ctk.CTk):
             btn.configure(state="normal")
         if not self._queue:
             self.stop_button.configure(state="disabled")
+        self._refresh_op_buttons()
         took = f"(took {fmt_duration(time.monotonic() - self._job_started)})"
 
         text = "".join(self._job_output)
@@ -2746,6 +2761,29 @@ class HydraUI(ctk.CTk):
             return None
         return slot
 
+    def _queue_blocked(self, op: str) -> bool:
+        """True (and say why) if `op` can't be started while jobs run or are queued."""
+        if op not in QUEUE_BLOCKED or not (self.busy or self._queue):
+            return False
+        self.log_line(f"⚠ {QUEUE_BLOCKED[op]}", "warning")
+        return True
+
+    def _refresh_op_buttons(self):
+        """Grey out the operations in QUEUE_BLOCKED while jobs run or are queued. They
+        stay clickable so a click can tell why it does nothing."""
+        active = self.busy or bool(self._queue)
+        for name, btn in self._op_button_by_name.items():
+            if name not in QUEUE_BLOCKED:
+                continue
+            if active:
+                btn.configure(
+                    text_color=T["faint"],
+                    border_color=T["border"],
+                    hover_color=T["panel"],
+                )
+            else:
+                btn.configure(**self._op_button_style[name])
+
     def _queue_defers_check(self) -> bool:
         """A job queued now runs later: sockets aren't scanned while the bus is busy, so
         a chip inserted meanwhile isn't known yet. The job checks it when it starts."""
@@ -2774,6 +2812,8 @@ class HydraUI(ctk.CTk):
 
     # ====================== Operations ======================
     def probe(self):
+        if self._queue_blocked("probe"):
+            return
         cs = self._selected_cs()
         if cs == CS_ALL:
             self._start_probe_all()
