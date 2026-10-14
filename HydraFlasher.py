@@ -1083,6 +1083,75 @@ class HydraUI(ctk.CTk):
         for tag, color in LOG_COLORS.items():
             self.log.tag_config(tag, foreground=color, lmargin2=hang)
         self.log.configure(state="disabled")
+        self._make_log_copyable()
+
+    def _make_log_copyable(self):
+        """The log is read-only, but text in it can be selected and copied like in a
+        terminal: drag + Ctrl+C (or Ctrl+Shift+C), Ctrl+A, or the right-click menu.
+        Keys are bound explicitly: Tk's own Ctrl+A is 'line start' on X11."""
+        tb = self.log._textbox
+        sel = blend(T["accent"], T["panel"], 0.35)
+        # Keep the selection visible while the log isn't focused (e.g. menu open)
+        tb.configure(selectbackground=sel, inactiveselectbackground=sel)
+        # A disabled Text doesn't take focus on click by itself; without it Ctrl+C
+        # would never reach the log
+        tb.bind("<Button-1>", lambda e: tb.focus_set(), add="+")
+        copy = lambda e: (self._copy_log(), "break")[1]
+        for seq in ("<Control-c>", "<Control-C>", "<Control-Insert>"):
+            tb.bind(seq, copy)
+        tb.bind("<Control-a>", lambda e: (self._select_all_log(), "break")[1])
+        self.log_menu = tkinter.Menu(
+            self,
+            tearoff=0,
+            bg=T["panel_hi"],
+            fg=T["text"],
+            activebackground=T["accent"],
+            activeforeground=T["bg"],
+            disabledforeground=T["faint"],
+            bd=0,
+            font=self.fonts["normal"],
+        )
+        self.log_menu.add_command(label="Copy", command=self._copy_log)
+        self.log_menu.add_command(
+            label="Copy all", command=lambda: self._copy_log(all_text=True)
+        )
+        self.log_menu.add_separator()
+        self.log_menu.add_command(label="Select all", command=self._select_all_log)
+        buttons = ("<Button-2>", "<Control-Button-1>") if self.platform == "Darwin" else ("<Button-3>",)
+        for seq in buttons:
+            tb.bind(seq, self._show_log_menu)
+
+    def _show_log_menu(self, event):
+        has_sel = bool(self.log._textbox.tag_ranges("sel"))
+        self.log_menu.entryconfigure("Copy", state="normal" if has_sel else "disabled")
+        try:
+            self.log_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.log_menu.grab_release()
+        return "break"
+
+    def _copy_log(self, all_text: bool = False):
+        """Copy the selection (or, with all_text, the whole log) to the clipboard."""
+        tb = self.log._textbox
+        if all_text:
+            text = tb.get("1.0", "end-1c").rstrip("\n")
+        elif tb.tag_ranges("sel"):
+            text = tb.get("sel.first", "sel.last")
+        else:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
+    def _select_all_log(self):
+        tb = self.log._textbox
+        tb.tag_add("sel", "1.0", "end-1c")
+        tb.focus_set()
+
+    def _log_at_end(self) -> bool:
+        """Whether the log shows its newest output. Checked before adding text: new
+        output only scrolls the log if it was at the end, so scrolling up (e.g. to
+        select text) isn't undone by every new line."""
+        return self.log._textbox.yview()[1] >= 0.999
 
     def _create_footer(self, parent):
         foot = ctk.CTkFrame(parent, fg_color="transparent")
@@ -1404,12 +1473,14 @@ class HydraUI(ctk.CTk):
     #   ● ✓ result
     # Without steps, details hang directly under the job ("⎿" on the first one).
     def _log_insert(self, chunks: Sequence[Tuple[str, str]]):
+        follow = self._log_at_end()
         self.log.configure(state="normal")
         for text, tag in chunks:
             self.log.insert("end", text, tag)
         self._trim_log()
         self.log.configure(state="disabled")
-        self.log.see("end")
+        if follow:
+            self.log.see("end")
 
     def log_line(self, text: str, tag: str = "normal"):
         self._log_buffer.append((text.rstrip() + "\n", tag))
@@ -1456,12 +1527,14 @@ class HydraUI(ctk.CTk):
     def _log_progress(self, text: str):
         """Log a progress line, replacing the previous one instead of piling them up."""
         self._flush_log_buffer()
+        follow = self._log_at_end()
         self.log.configure(state="normal")
         if self._progress_line_active:
             self.log.delete("end-2l", "end-1l")
         self.log.insert("end", text.rstrip() + "\n", "dim")
         self.log.configure(state="disabled")
-        self.log.see("end")
+        if follow:
+            self.log.see("end")
         self._progress_line_active = True
 
     def _clear_log(self):
