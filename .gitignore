@@ -9,3 +9,15 @@ firmware/pico-sdk/
 
 # Local working copy of the firmware fork (its source now lives in firmware/)
 serprog_fork/
+
+# Claude Code worktrees and local settings
+.claude/
+
+# Scratch files from running a test directly (run_all.sh uses a temp dir)
+tests/*.json
+tests/*.log
+tests/*.csv
+tests/*.bin
+tests/*.txt
+tests/*.lock
+tests/*.png
