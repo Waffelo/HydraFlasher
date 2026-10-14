@@ -104,7 +104,7 @@ NOISE_PATTERNS = [
 ]
 
 # ── Theme (Claude Code terminal look) ───────────────────────────────
-T = {
+THEME_DARK = {
     "bg": "#141413",
     "panel": "#1c1c1a",
     "panel_hi": "#262624",
@@ -119,7 +119,36 @@ T = {
     "green": "#7ec27a",
     "red": "#e5655b",
     "yellow": "#e3b341",
+    "led_empty": "#6e3b36",
 }
+# Text colours reach ~4.5:1 contrast on the panels (faint is meant to be dim)
+THEME_LIGHT = {
+    "bg": "#faf9f5",
+    "panel": "#f2f0e8",
+    "panel_hi": "#e8e5da",
+    "border": "#d9d5c8",
+    "border_hi": "#b9b4a5",
+    "text": "#1f1e1b",
+    "soft": "#4d4b45",
+    "dim": "#6e6c64",
+    "faint": "#a8a59b",
+    "accent": "#b1532f",
+    "accent_hi": "#a84f30",
+    "green": "#2e7d32",
+    "red": "#c62828",
+    "yellow": "#8a5f00",
+    "led_empty": "#e3b9b3",
+}
+# customtkinter takes (light, dark) pairs and switches with the appearance mode;
+# plain Tk widgets need tk_color() and _apply_theme()
+T = {k: (THEME_LIGHT[k], THEME_DARK[k]) for k in THEME_DARK}
+
+
+def tk_color(c) -> str:
+    """The current mode's value of a (light, dark) pair, for plain Tk widgets."""
+    if isinstance(c, (tuple, list)):
+        return c[0] if ctk.get_appearance_mode() == "Light" else c[1]
+    return c
 LOG_COLORS = {
     "success": T["green"],
     "error": T["red"],
@@ -228,8 +257,13 @@ LOGO_PNG = {
 _UNSCANNED = ("?", None)
 
 
-def blend(c1: str, c2: str, t: float) -> str:
-    """Mix colour c1 into c2 by factor t (0 → c2, 1 → c1)."""
+def blend(c1, c2, t: float):
+    """Mix colour c1 into c2 by factor t (0 → c2, 1 → c1). (light, dark) pairs are
+    mixed per mode and give a pair."""
+    if isinstance(c1, tuple) or isinstance(c2, tuple):
+        p1 = c1 if isinstance(c1, tuple) else (c1, c1)
+        p2 = c2 if isinstance(c2, tuple) else (c2, c2)
+        return (blend(p1[0], p2[0], t), blend(p1[1], p2[1], t))
     a = [int(c1[i : i + 2], 16) for i in (1, 3, 5)]
     b = [int(c2[i : i + 2], 16) for i in (1, 3, 5)]
     return "#" + "".join(f"{round(x * t + y * (1 - t)):02x}" for x, y in zip(a, b))
@@ -412,7 +446,7 @@ class SocketCard(ctk.CTkFrame):
 
     STATES = {  # state: (led colour, lit)
         "unknown": (T["faint"], False),
-        "empty": ("#6e3b36", False),
+        "empty": (T["led_empty"], False),
         "ok": (T["green"], True),
         "warn": (T["yellow"], True),
         "pass": (T["green"], True),
@@ -442,7 +476,7 @@ class SocketCard(ctk.CTkFrame):
             top,
             width=18,
             height=18,
-            bg=T["panel"],
+            bg=tk_color(T["panel"]),
             highlightthickness=0,
             cursor="hand2",
         )
@@ -534,12 +568,15 @@ class SocketCard(ctk.CTkFrame):
         self._pulse_id = self.after(450, self._pulse_tick)
 
     def _draw_led(self):
+        """Also called when the theme changes: a Tk canvas doesn't follow it by itself."""
         color, lit = self.STATES[self._state]
+        color, panel = tk_color(color), tk_color(T["panel"])
+        self._led.configure(bg=panel)
         self._led.delete("all")
         if lit:
             halo = blend(
                 color,
-                T["panel"],
+                panel,
                 0.12 if (self._state == "busy" and self._pulse) else 0.32,
             )
             self._led.create_oval(1, 1, 17, 17, fill=halo, outline="")
@@ -572,6 +609,8 @@ class HydraUI(ctk.CTk):
 
         # NOTE: not "self.config" – that would shadow Tk's config() method
         self.cfg = self.load_config()
+        self.theme = "light" if self.cfg.get("theme") == "light" else "dark"
+        ctk.set_appearance_mode(self.theme)
         self.last_dir = self.cfg.get("last_dir", os.path.expanduser("~"))
         self.recent_files: List[str] = self.cfg.get("recent_files", [])[:10]
         # JEDEC ID -> {"chips": [...], "size_kb": n}, learned from flashprog probes.
@@ -712,6 +751,7 @@ class HydraUI(ctk.CTk):
                 "fast_verify": self.fast_verify_var.get(),
                 "partial_write": self.partial_var.get(),
                 "one_by_one": self.one_by_one_var.get(),
+                "theme": self.theme,
                 "spispeed": self.spispeed_var.get(),
                 "cs": self.cs_display_var.get(),
                 "last_dir": self.last_dir,
@@ -879,10 +919,16 @@ class HydraUI(ctk.CTk):
             self._logo_img = tkinter.PhotoImage(master=self, data=LOGO_PNG[scale])
         except tkinter.TclError:
             self._logo_img = None
+        self._logo_lbl = None
         if self._logo_img:
-            tkinter.Label(
-                head, image=self._logo_img, bg=T["bg"], bd=0, highlightthickness=0
-            ).pack(side="left", padx=(0, 8))
+            self._logo_lbl = tkinter.Label(
+                head,
+                image=self._logo_img,
+                bg=tk_color(T["bg"]),
+                bd=0,
+                highlightthickness=0,
+            )
+            self._logo_lbl.pack(side="left", padx=(0, 8))
         ctk.CTkLabel(
             head,
             text="Hydra Flasher" if self._logo_img else "✻ Hydra Flasher",
@@ -899,6 +945,28 @@ class HydraUI(ctk.CTk):
             head, text="", font=self.fonts["normal"], text_color=T["dim"]
         )
         self.conn_label.pack(side="right")
+        # Light/dark switch, left of the port status. Shows the mode a click switches
+        # to. Nerd Fonts have sun/moon icons; plain fonts get ☀/☾ (fallback glyphs)
+        nerd = "nerd" in self.fonts["normal"].actual("family").lower()
+        self._theme_icons = (
+            {"dark": "", "light": ""} if nerd else {"dark": "☀", "light": "☾"}
+        )
+        self.theme_button = ctk.CTkLabel(
+            head,
+            text=self._theme_icons[self.theme],
+            font=self.fonts["title"],
+            text_color=T["dim"],
+            cursor="hand2",
+            width=24,
+        )
+        self.theme_button.pack(side="right", padx=(0, 14))
+        self.theme_button.bind("<Button-1>", lambda e: self._toggle_theme())
+        self.theme_button.bind(
+            "<Enter>", lambda e: self.theme_button.configure(text_color=T["accent"])
+        )
+        self.theme_button.bind(
+            "<Leave>", lambda e: self.theme_button.configure(text_color=T["dim"])
+        )
 
     def _create_sockets(self, parent):
         self._section(
@@ -1090,19 +1158,17 @@ class HydraUI(ctk.CTk):
         self.log.pack(fill="both", expand=True, padx=6, pady=6)
         # Wrapped lines hang under the text instead of starting at the left edge
         hang = self.fonts["log"].measure("0" * 9)
-        for tag, color in LOG_COLORS.items():
-            self.log.tag_config(tag, foreground=color, lmargin2=hang)
+        for tag in LOG_COLORS:
+            self.log.tag_config(tag, lmargin2=hang)
         self.log.configure(state="disabled")
         self._make_log_copyable()
+        self._apply_log_colors()
 
     def _make_log_copyable(self):
         """The log is read-only, but text in it can be selected and copied like in a
         terminal: drag + Ctrl+C (or Ctrl+Shift+C), Ctrl+A, or the right-click menu.
         Keys are bound explicitly: Tk's own Ctrl+A is 'line start' on X11."""
         tb = self.log._textbox
-        sel = blend(T["accent"], T["panel"], 0.35)
-        # Keep the selection visible while the log isn't focused (e.g. menu open)
-        tb.configure(selectbackground=sel, inactiveselectbackground=sel)
         # A disabled Text doesn't take focus on click by itself; without it Ctrl+C
         # would never reach the log
         tb.bind("<Button-1>", lambda e: tb.focus_set(), add="+")
@@ -1111,16 +1177,8 @@ class HydraUI(ctk.CTk):
             tb.bind(seq, copy)
         tb.bind("<Control-a>", lambda e: (self._select_all_log(), "break")[1])
         self.log_menu = tkinter.Menu(
-            self,
-            tearoff=0,
-            bg=T["panel_hi"],
-            fg=T["text"],
-            activebackground=T["accent"],
-            activeforeground=T["bg"],
-            disabledforeground=T["faint"],
-            bd=0,
-            font=self.fonts["normal"],
-        )
+            self, tearoff=0, bd=0, font=self.fonts["normal"]
+        )  # colours: _apply_log_colors
         self.log_menu.add_command(label="Copy", command=self._copy_log)
         self.log_menu.add_command(
             label="Copy all", command=lambda: self._copy_log(all_text=True)
@@ -1136,6 +1194,37 @@ class HydraUI(ctk.CTk):
         )
         for seq in buttons:
             tb.bind(seq, self._show_log_menu)
+
+    def _apply_log_colors(self):
+        """Colours of the log's plain Tk parts: text tags, selection, right-click menu.
+        Tk doesn't follow customtkinter's appearance mode, so _apply_theme reruns this."""
+        for tag, color in LOG_COLORS.items():
+            self.log.tag_config(tag, foreground=tk_color(color))
+        sel = tk_color(blend(T["accent"], T["panel"], 0.35))
+        # Keep the selection visible while the log isn't focused (e.g. menu open)
+        self.log._textbox.configure(selectbackground=sel, inactiveselectbackground=sel)
+        self.log_menu.configure(
+            bg=tk_color(T["panel_hi"]),
+            fg=tk_color(T["text"]),
+            activebackground=tk_color(T["accent"]),
+            activeforeground=tk_color(T["bg"]),
+            disabledforeground=tk_color(T["faint"]),
+        )
+
+    def _toggle_theme(self):
+        self.theme = "light" if self.theme == "dark" else "dark"
+        ctk.set_appearance_mode(self.theme)
+        self._apply_theme()
+        self.save_config()
+
+    def _apply_theme(self):
+        """Re-colour the plain Tk widgets; customtkinter widgets switch by themselves."""
+        self.theme_button.configure(text=self._theme_icons[self.theme])
+        if self._logo_lbl:
+            self._logo_lbl.configure(bg=tk_color(T["bg"]))
+        self._apply_log_colors()
+        for card in self.cards.values():
+            card._draw_led()
 
     def _show_log_menu(self, event):
         has_sel = bool(self.log._textbox.tag_ranges("sel"))
