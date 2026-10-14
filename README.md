@@ -5,6 +5,7 @@
   ![License](https://img.shields.io/github/license/Waffelo/HydraFlasher)
   ![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)
   ![Raspberry Pi Pico](https://img.shields.io/badge/hardware-RP2040%20Pico-A22846?logo=raspberrypi&logoColor=white)
+  [![Static Badge](https://img.shields.io/badge/Github-Wiki-blue?style=flat&logo=github&link=https%3A%2F%2Fgithub.com%2FWaffelo%2FHydraFlasher%2Fwiki)](https://github.com/Waffelo/HydraFlasher/wiki)
 
   
 A desktop GUI for flashing SPI flash chips with [flashprog](https://flashprog.org/)
