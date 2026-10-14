@@ -14,12 +14,15 @@ every run.
   <img src="screenshot.png" alt="HydraFlasher main window" width="520">
 </p>
 
+**User guide:** see the [wiki](https://github.com/Waffelo/HydraFlasher/wiki): features, use cases and troubleshooting.
+
 ## Layout
 
 | Path | What |
 | --- | --- |
 | `HydraFlasher.py` | The GUI (Python, customtkinter) |
 | `firmware/` | Pico serprog firmware with multi-CS, status LEDs and on-device CRC32 |
+| `wiki/` | Source of the GitHub wiki (`wiki/publish.sh` publishes it) |
 
 ## Running the GUI
 

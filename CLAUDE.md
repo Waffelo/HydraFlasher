@@ -63,6 +63,12 @@ A new command touches three places: `serprog.h`, the hand-built `cmdmap` bitmap 
 
 **Firmware TinyUSB patch.** `firmware/tinyusb_patched/cdc_device.c` is a copy of TinyUSB 0.18.0's CDC driver with one change: a separate IN buffer size. `CMakeLists.txt` filters the SDK's copy out of `tinyusb_device_base` and compiles this one instead.
 
+## User guide wiki (keep it in sync!)
+
+`wiki/` holds the pages of the GitHub wiki (user guide: features, use cases, troubleshooting). **Every user-visible change must update the affected pages in the same commit**, for example new or changed buttons, settings, messages, shortcuts or behaviour. Check `Troubleshooting.md` (message tables) and `Reference.md` (shortcuts, files, saved settings) too. The pages link to each other as `[text](Page-Name#anchor)`; keep anchors valid when renaming headings.
+
+The GitHub wiki is a separate repo. `wiki/publish.sh` mirrors `wiki/*.md` into it; it needs GitHub credentials, and the wiki must have been created once in the browser.
+
 ## License
 
 The GUI is GPL-3.0. The firmware keeps its upstream licenses (`firmware/COPYING`, `firmware/COPYING.CC-BY-SA`).
