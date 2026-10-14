@@ -30,9 +30,7 @@ It's based on [pico-serprog](https://github.com/stacksmashing/pico-serprog) by T
 
 All sockets share SCK, MOSI and MISO; each socket gets its own CS line, which idles high. The HydraFlasher GUI uses CS0 to CS3; CS4 and CS5 are spare. The LEDs are active high: the GPIO goes high to light one. At most one is lit at a time, and all are off at power-up.
 
-![Pico pinout](pinout.png)
-
-*The picture shows only the SPI lines and CS0 (pin 7). The table above is the full pinout.*
+![Pico pinout: SPI, chip selects, LEDs, 3V3 and GND](pinout.png)
 
 ## Building and flashing
 
@@ -105,8 +103,5 @@ Defined in `serprog.h`. Multi-byte values are little-endian; every command answe
 As a lot of the code itself was heavily inspired/influenced by `stm32-vserprog`
 this code is licensed under GPLv3.
 
-pinout.png is based on
-[pico-pinout.svg](https://www.raspberrypi.com/documentation/microcontrollers/images/pico-pinout.svg)
-by Raspberry Pi Ltd, under the
-[Creative Commons Attribution-ShareAlike 4.0 International](https://creativecommons.org/licenses/by-sa/4.0/)
-license.
+pinout.png is an original drawing for HydraFlasher (earlier versions used one
+based on Raspberry Pi Ltd's pico-pinout.svg, under CC BY-SA 4.0).

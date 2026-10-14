@@ -3195,8 +3195,9 @@ class HydraUI(ctk.CTk):
         self._refresh_op_buttons()
 
     def _broadcast_write_error(self) -> Optional[str]:
-        """Why write can't go to ALL right now (None if it can, or ALL isn't the target).
-        One-by-one writes every usable chip on its own, so only "no chips" stops it."""
+        """Why write or erase can't go to ALL right now (None if they can, or ALL isn't
+        the target). One-by-one handles every usable chip on its own, so only "no
+        chips" stops it."""
         if self._selected_cs() != CS_ALL:
             return None
         detected = self._detected_slots()
@@ -3229,7 +3230,7 @@ class HydraUI(ctk.CTk):
             return  # still building the window
         greyed = set(QUEUE_BLOCKED) if (self.busy or self._queue) else set()
         if self._broadcast_write_error():
-            greyed.add("write")
+            greyed.update(("write", "erase"))
         for name, btn in self._op_button_by_name.items():
             style = self._op_button_style[name]
             if name in greyed:
@@ -3455,7 +3456,16 @@ class HydraUI(ctk.CTk):
 
     def erase(self):
         cs = self._selected_cs()
-        if cs == CS_ALL:
+        if cs == CS_ALL and self._one_by_one():
+            # Each socket on its own: the chips may differ
+            detected = self._one_by_one_targets()
+            if not detected:
+                return
+            target = (
+                f"{len(detected)} chip(s) one by one "
+                f"(CS{', CS'.join(str(d['cs']) for d in detected)})"
+            )
+        elif cs == CS_ALL:
             detected = self._require_same_type()
             if not detected:
                 return
@@ -3470,7 +3480,11 @@ class HydraUI(ctk.CTk):
             danger=True,
         ):
             return
-        if cs == CS_ALL:
+        if cs == CS_ALL and self._one_by_one():
+            # One job per socket: the first starts, the rest wait in the queue
+            for d in detected:
+                self._start_erase(d["cs"])
+        elif cs == CS_ALL:
             self._start_erase_all(self._slots_key(detected))
         else:
             self._start_erase(cs)
