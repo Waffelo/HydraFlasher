@@ -65,9 +65,9 @@ A new command touches three places: `serprog.h`, the hand-built `cmdmap` bitmap 
 
 ## User guide wiki (keep it in sync!)
 
-`wiki/` holds the pages of the GitHub wiki (user guide: features, use cases, troubleshooting). **Every user-visible change must update the affected pages in the same commit**, for example new or changed buttons, settings, messages, shortcuts or behaviour. Check `Troubleshooting.md` (message tables) and `Reference.md` (shortcuts, files, saved settings) too. The pages link to each other as `[text](Page-Name#anchor)`; keep anchors valid when renaming headings.
+The user guide (features, use cases, troubleshooting) is the GitHub wiki, a separate repo: `https://github.com/Waffelo/HydraFlasher.wiki.git`. It isn't checked out in this repo. **Every user-visible change must update the affected wiki pages**, for example new or changed buttons, settings, messages, shortcuts or behaviour. Check `Troubleshooting.md` (message tables) and `Reference.md` (shortcuts, files, saved settings) too.
 
-The GitHub wiki is a separate repo. `wiki/publish.sh` mirrors `wiki/*.md` into it; it needs GitHub credentials, and the wiki must have been created once in the browser.
+To update it: clone the wiki repo into a temporary folder, edit, commit and push. Pages link to each other as `[text](Page-Name#anchor)`; keep anchors valid when renaming headings.
 
 ## License
 

@@ -22,7 +22,6 @@ every run.
 | --- | --- |
 | `HydraFlasher.py` | The GUI (Python, customtkinter) |
 | `firmware/` | Pico serprog firmware with multi-CS, status LEDs and on-device CRC32 |
-| `wiki/` | Source of the GitHub wiki (`wiki/publish.sh` publishes it) |
 
 ## Running the GUI
 
