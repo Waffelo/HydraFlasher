@@ -1608,7 +1608,8 @@ class HydraUI(ctk.CTk):
         info["jedec"], info["uid"] = jedec, uid
         # Only learn from auto-detect runs: with -c flashprog reports just the forced
         # definition, which would hide that several definitions match this chip
-        if jedec and info["chips"] and self._job.get("chip", "Auto-detect") == "Auto-detect":
+        used = getattr(self, "_chip_used", self._job.get("chip", "Auto-detect"))
+        if jedec and info["chips"] and used == "Auto-detect":
             self.jedec_cache[jedec] = {
                 "chips": info["chips"],
                 "size_kb": info["size_kb"],
@@ -2166,6 +2167,8 @@ class HydraUI(ctk.CTk):
             "progress": self.progress_var.get(),
             "noverify": self.noverify_var.get(),
             "chip": chip,
+            # per-chip-type picks, for sockets the job's definition doesn't fit
+            "chip_choice": dict(self._chip_choice),
             "sudo": use_sudo,
             "retry": retry,
             "pico": self.fast_verify_var.get() and self._can_use_pico(port),
@@ -2337,6 +2340,25 @@ class HydraUI(ctk.CTk):
             self._set_led(LED["FAILED"])
         self.save_config()
 
+    def _socket_chip(self, cs: int, identify: bool = False) -> str:
+        """The -c definition for one socket (worker thread). A job's definition is
+        chosen for its target; a job over several sockets (probe/read/verify all, a
+        one-by-one batch) also meets chip types it doesn't fit, and flashprog with a
+        wrong -c finds no chip at all. So per socket: the job's definition if it fits
+        this chip, else the one picked for this chip type, else auto-detect. A probe
+        (identify) of a chip whose definitions aren't known yet always auto-detects."""
+        chip = self._job["chip"]
+        if chip == "Auto-detect" or cs >= NUM_SLOTS:
+            return chip  # broadcast: one chip type by definition
+        slot = self.slots[cs]
+        chips = slot["chips"] if slot and slot.get("detected") else []
+        if not chips:
+            return "Auto-detect" if identify else chip
+        if chip in chips:
+            return chip
+        remembered = self._job.get("chip_choice", {}).get(slot.get("jedec") or "")
+        return remembered if remembered in chips else "Auto-detect"
+
     def _build_command(
         self, extra: List[str], cs: int, noverify: bool = False
     ) -> List[str]:
@@ -2353,8 +2375,10 @@ class HydraUI(ctk.CTk):
             cmd.append("--progress")
         if noverify:
             cmd.append("-n")
-        if job["chip"] != "Auto-detect":
-            cmd += ["-c", job["chip"]]
+        # Remembered for _store_slot: only auto-detect runs teach the JEDEC cache
+        self._chip_used = chip = self._socket_chip(cs, identify=not extra)
+        if chip != "Auto-detect":
+            cmd += ["-c", chip]
         if job["sudo"]:
             cmd = ["sudo", "-S", "-p", "", "--"] + cmd
         return cmd
@@ -2883,7 +2907,17 @@ class HydraUI(ctk.CTk):
             self.after(0, self.update_progress, f"CS{cs}")
             _, text = self._exec([], cs, silent=True)
             first_output = first_output or text
-            self._store_slot(cs, self._parse_probe(text, cs))
+            info = self._parse_probe(text, cs)
+            ident = self._socket_ident[cs]
+            if not info["detected"] and ident is not _UNSCANNED and ident[0]:
+                # The scan sees a chip here: don't call the socket empty
+                self._detail(
+                    f"⚠ CS{cs}: flashprog found no chip, but the scan reads JEDEC "
+                    f"{ident[0]} – reseat it or probe CS{cs} on its own",
+                    "warning",
+                )
+                continue
+            self._store_slot(cs, info)
         detected = self._detected_slots()
         self.after(0, self._log_slot_table)
         if not detected:
