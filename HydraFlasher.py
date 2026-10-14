@@ -13,6 +13,7 @@ import time
 import tkinter
 import tkinter.font
 import zlib
+import base64
 from contextlib import contextmanager
 from tkinter import filedialog, messagebox
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple
@@ -254,6 +255,32 @@ LOGO_PNG = {
         "/L7KtngMiPf0xdbNHdz/AAG5S/manmigAAAAAElFTkSuQmCC"
     ),
 }
+
+# Light/dark switch icons: sun and moon drawn smooth at 1x/2x by the build-time
+# script that also made the logo, kept as 8-bit alpha masks and coloured with
+# tinted_icon() at runtime, so they follow the theme without Pillow.
+THEME_ICONS = {  # (icon, scale): (size, base64 of zlib'd 8-bit alpha mask)
+    ("sun", 1): (18, "eNplUDsOgzAMfXGQx8A5kbgJ3IEhEjsSF6BbK4FADB3pLSrUyE1IltLnwX6Jf8+A1gqKnw94pzUiCLm7gVQilfWRkcWHylYgjU5aznjos4xb6aAVnf5E+POl3mxZ1PNUF6U9KaDBq3isDKLYnhp5O/eWhgKb9lfPq3Mizq3c38ft92U4jv1SZcy1c0hI06c5TveL/22YVGT9wElFVEpYxCAqPdMVYfzkiSBcTClsO3sXLvYFvw1kgw=="),
+    ("sun", 2): (36, "eNqNVLFKA0EQnZ1dUhgljaXYmoSAheA3pPIH7FJqLQS08EMMp7VKClGQXFybFIL24kdYmCLCJXnO3W3u9oyGGzj27u1jZm5m3hD5puloPj+WY4UxPQNPciybNrzgDIFLMu7L5A6VexwncJwcjs92dyv1zxQCFymHaavbdiRNbeBjIyEx2en0JsmZaeMDaKf5GzrHF+xaTNJ0B9zHONOaFfjc+VTb7/iGXRe/rJqjUVOxvK5bAd+3Fbt8ahYTvG0qlXrWpNTmm0C2liWd+B2jQxWHqAp1BEjjZ6TqKz4bEnr/pNc72ZckG594rRaKyVQ73CHaHSCxwS7RzmHtV72TIAdjzCKxGcYH5BUwI1V0a4Io9RNh0tKVjKLZGKM1J+10lJj0LABrHV+afCr2MENmM+zlE3L8eBUE1/06U3ce5Zxo3iWu96+DIHg4c9gLUwCfI93nFxRsJedoEA7D8PbvWLehXA5Oy+SsObb//j25NGVqWL4XJXpaYjZKzFiJWS0z80Xt3AN3y9rxNajpZjq1To6eBn0tG7oAwoWucy374jfSfQyJl3aCt1sKnMJu8feYVNr+uaM8jgzmKZki+gMu9IBT"),
+    ("moon", 1): (18, "eNpVkC0OwlAQhHe3BY/Av4JGIxANGkmCqOcC3ICDEOAwpAYLghtgKjDQvvYNW/pHR22+7M/MEqk8pr6EaDrnjmoZXd5r8logcgTOHdCRE9JiIS3xaYMUrzG1a4SvhUUy6ggZC+fcjKUlSxSw2NOgR5xLAhoK6916SuHN/G/Ooei5C3yZrDwur2coET6PO7Zqp3SY5Q7OutK6NClQaBMOLFwnjVMgjSNqHqCdJgzNr6hVfYyrsF+gm1vf"),
+    ("moon", 2): (36, "eNqVlLFKA0EQhmf31soQlKQIaFJZWNjYWYmlksZHECFJEUwRrGyinY/gY1ikEyFiaaFFioCQTlAwBISASW53nN3LJpdk9yQDVxz33T//zswOwKrBA8ETASbYfxoBPYWTy2PwKjEG6crTD77nuU+N/i11EbG37ZUJIHuPOB5iHYRXJdfGkVT4lfJl4jxDCOngnVcmgKZGMMRTJnzIuUEUql2PY8ZSH1Iapp8Btx0BZXJimN6Gh+HwrMKIGRbcuRhs/dJnHRIPTUccjotoZPTZr9xnF1CL7GidV8bdzLVlCDpyJoszIb44hyiWS0O3sMaSPBvbdRrY+FQtnF3XKMQbKpngjIKLpRpa6PFglmWHzfdi6gkfyntpxjb3a28XUcGmPY1BiJ+dzjdif33iyM5GjIpyj/BsWi47Y7FQSsohNmcVtbM6HyNsZzhfnPk4IQnJzU3K5O6EyhaADnqfXeidvYPhmEI77pZgad7MXW4NIp1Bq5K2fVjaCflitdGoFvOT18TdkrRmaEdRBHzl5QZ/7x1wRw=="),
+}
+
+
+def tinted_icon(master, name: str, scale: int, fg: str, bg: str) -> tkinter.PhotoImage:
+    """A THEME_ICONS mask drawn in colour fg on bg (both "#rrggbb")."""
+    size, data = THEME_ICONS[(name, scale)]
+    alpha = zlib.decompress(base64.b64decode(data))
+    shades: Dict[int, str] = {}
+    rows = []
+    for y in range(size):
+        row = alpha[y * size : (y + 1) * size]
+        rows.append(
+            "{" + " ".join(shades.setdefault(a, blend(fg, bg, a / 255)) for a in row) + "}"
+        )
+    img = tkinter.PhotoImage(master=master, width=size, height=size)
+    img.put(" ".join(rows))
+    return img
 _UNSCANNED = ("?", None)
 
 
@@ -952,28 +979,35 @@ class HydraUI(ctk.CTk):
             head, text="", font=self.fonts["normal"], text_color=T["dim"]
         )
         self.conn_label.pack(side="right")
-        # Light/dark switch, left of the port status. Shows the mode a click switches
-        # to. Nerd Fonts have sun/moon icons; plain fonts get ☀/☾ (fallback glyphs)
-        nerd = "nerd" in self.fonts["normal"].actual("family").lower()
-        self._theme_icons = (
-            {"dark": "", "light": ""} if nerd else {"dark": "☀", "light": "☾"}
-        )
+        # Light/dark switch, left of the port status: icon + the mode a click switches
+        # to. The icons are drawn (THEME_ICONS), not font glyphs: Nerd Font "Mono"
+        # squeezes icons into one cell, which made the sun read as a dot.
+        switch = ctk.CTkFrame(head, fg_color="transparent", cursor="hand2")
+        switch.pack(side="right", padx=(0, 16))
+        self._theme_icon = tkinter.Label(switch, bd=0, highlightthickness=0, cursor="hand2")
+        self._theme_icon.pack(side="left")
         self.theme_button = ctk.CTkLabel(
-            head,
-            text=self._theme_icons[self.theme],
-            font=self.fonts["title"],
-            text_color=T["dim"],
-            cursor="hand2",
-            width=24,
+            switch, text="", font=self.fonts["normal"], cursor="hand2"
         )
-        self.theme_button.pack(side="right", padx=(0, 14))
-        self.theme_button.bind("<Button-1>", lambda e: self._toggle_theme())
-        self.theme_button.bind(
-            "<Enter>", lambda e: self.theme_button.configure(text_color=T["accent"])
-        )
-        self.theme_button.bind(
-            "<Leave>", lambda e: self.theme_button.configure(text_color=T["dim"])
-        )
+        self.theme_button.pack(side="left", padx=(6, 0))
+        self._theme_hover = False
+        for w in (switch, self._theme_icon, self.theme_button):
+            w.bind("<Button-1>", lambda e: self._toggle_theme())
+            w.bind("<Enter>", lambda e: self._render_theme_switch(True))
+            w.bind("<Leave>", lambda e: self._render_theme_switch(False))
+        self._render_theme_switch()
+
+    def _render_theme_switch(self, hover: Optional[bool] = None):
+        """Sun + "light mode" in dark mode, moon + "dark mode" in light mode."""
+        if hover is not None:
+            self._theme_hover = hover
+        color = T["accent"] if self._theme_hover else T["dim"]
+        icon, label = ("sun", "light mode") if self.theme == "dark" else ("moon", "dark mode")
+        scale = 2 if ctk.ScalingTracker.get_window_scaling(self) >= 1.5 else 1
+        bg = tk_color(T["bg"])
+        self._theme_img = tinted_icon(self, icon, scale, tk_color(color), bg)
+        self._theme_icon.configure(image=self._theme_img, bg=bg)
+        self.theme_button.configure(text=label, text_color=color)
 
     def _create_sockets(self, parent):
         self._section(
@@ -1233,7 +1267,7 @@ class HydraUI(ctk.CTk):
 
     def _apply_theme(self):
         """Re-colour the plain Tk widgets; customtkinter widgets switch by themselves."""
-        self.theme_button.configure(text=self._theme_icons[self.theme])
+        self._render_theme_switch()
         if self._logo_lbl:
             self._logo_lbl.configure(bg=tk_color(T["bg"]))
         self._apply_log_colors()
