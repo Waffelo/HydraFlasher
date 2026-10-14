@@ -1147,6 +1147,14 @@ class HydraUI(ctk.CTk):
             text = tb.get("sel.first", "sel.last")
         else:
             return
+        # The welcome box aligns its right border with a tab; paste it as spaces
+        col = getattr(self, "_box_column", 0)
+        text = "\n".join(
+            line.replace("\t", " " * max(col - line.index("\t"), 1), 1)
+            if "\t" in line
+            else line
+            for line in text.split("\n")
+        )
         self.clipboard_clear()
         self.clipboard_append(text)
 
@@ -3717,12 +3725,18 @@ class HydraUI(ctk.CTk):
             (f"  flash log: {FLASH_LOG.replace(home, '~')}", "dim"),
         ]
         width = max(len(t) for t, _ in rows) + 2
-        chunks = [("╭" + "─" * width + "╮\n", "accent")]
+        top = "╭" + "─" * width
+        # The right border sits on a tab stop exactly under the corner ╮, not after
+        # padding characters: a glyph the log font lacks (✻) comes from a fallback
+        # font with another width and would push that row's border out of line
+        self.log.tag_config("welcome_box", tabs=(self.fonts["log"].measure(top),))
+        self._box_column = len(top)  # copying turns the tab back into spaces
+        chunks = [(top + "╮\n", "accent")]
         for text, tag in rows:
             chunks += [
-                ("│ ", "accent"),
-                (text.ljust(width - 1), tag),
-                ("│\n", "accent"),
+                ("│ ", ("accent", "welcome_box")),
+                (text, tag),
+                ("\t│\n", "accent"),
             ]
         chunks += [("╰" + "─" * width + "╯\n", "accent")]
         self._log_insert(chunks)
