@@ -20,7 +20,14 @@ cd firmware && ./build.sh           # -> firmware/build/pico_serprog.uf2 (needs 
 cd firmware && ./build.sh flash     # build + copy to a Pico in BOOTSEL; reboots a running HydraFlasher Pico into BOOTSEL via 0x21 first
 ```
 
-There are no tests or linters. CI (`.github/workflows/firmware.yml`) only builds the firmware, against pico-sdk 1.5.0.
+```sh
+tests/run_all.sh                    # GUI tests with a fake Pico and fake flashprog (needs a display)
+tests/run_all.sh run_onebyone.py    # a single test
+python3 tools/run_readme_shot.py . screenshot.png   # regenerate the README screenshot
+python3 tools/draw_pinout.py firmware/pinout.png    # regenerate the pinout drawing
+```
+
+Each test (`tests/run_*.py`) starts the real GUI, swaps `Programmer` for a fake with scripted IDs and flashprog for a `tests/fakeflash*.py` script that logs its command lines, then prints `PASS`/`FAIL` lines. A test must point `CONFIG_FILE`, `DATA_DIR` and `FLASH_LOG` at its own folder, and seed `jedec_cache` for any chip it doesn't want auto-identified (otherwise the scan starts an extra probe job). Run tests after behaviour changes, and add one for new features. There are no linters. CI (`.github/workflows/firmware.yml`) only builds the firmware, against pico-sdk 1.5.0.
 
 ## Architecture
 
