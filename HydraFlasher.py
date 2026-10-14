@@ -1306,6 +1306,7 @@ class HydraUI(ctk.CTk):
 
     def _apply_scan_results(self, results: List[tuple]):
         changed = False
+        unknown = []  # sockets that got a chip flashprog hasn't identified yet
         for cs, ident in enumerate(results):
             prev = self._socket_ident[cs]
             if ident == prev:
@@ -1315,6 +1316,8 @@ class HydraUI(ctk.CTk):
             self._socket_result[cs] = None
             slot = self._slot_from_ident(cs, ident)
             self.slots[cs] = slot
+            if ident[0] and not slot["chips"]:
+                unknown.append(cs)
             if not ident[0]:
                 self._emptied_since_batch.add(cs)
             if prev is _UNSCANNED:
@@ -1326,6 +1329,16 @@ class HydraUI(ctk.CTk):
                 )
             else:
                 self.log_line(f"{BULLET} CS{cs} chip removed", "dim")
+        # A chip override is meant for a known chip. With it, flashprog only tries that
+        # one definition, so an unknown chip would never get identified.
+        override = self.chip_override.get()
+        if unknown and override != "Auto-detect":
+            self.chip_override.set("Auto-detect")
+            sockets = ", ".join(f"CS{cs}" for cs in unknown)
+            self.log_line(
+                f"→ Unknown chip on {sockets} – chip override {override} reset to Auto-detect",
+                "info",
+            )
         if changed:
             self._scan_stable = 0
             self._refresh_sockets()
