@@ -61,6 +61,8 @@ A new command touches three places: `serprog.h`, the hand-built `cmdmap` bitmap 
 
 **Single instance.** `__main__` holds a lock file (`acquire_instance_lock`, in the data dir). Two instances would talk to the same Pico, and the per-process `_port_lock` can't protect against that.
 
+**Log output.** Jobs log as a tree: `log_job` (`● title`), then `log_step` and `log_detail`, ending in a `● ✓`/`● ✕` result. Anything outside a job (events, refusals, choices) goes through `log_note(text, kind)`, never a bare `log_line`: it adds the `●`, a `⚠`/`✕` icon for warning/error, and a blank line after a finished job. Socket tables use `_slot_rows`, per-socket results use `result_row`, so the columns line up. Use only symbols the log font has (1 cell wide). A fallback glyph is wider and shifts the line in the GUI, though a pasted copy looks fine; `⎿` was one (+6 px), which is why the tree uses `╰`.
+
 **Theme (light/dark).** Every `T[...]` colour is a `(light, dark)` pair, built from `THEME_LIGHT` and `THEME_DARK`. Pass pairs straight to customtkinter widgets, which switch with `ctk.set_appearance_mode`. `blend()` mixes pairs per mode. Plain Tk widgets (the socket light canvas, the logo label, log text tags and selection, the log menu) need `tk_color(pair)` for the current value, and `_apply_theme()` re-colours them on a switch; add any new plain-Tk widget there. The sun/moon in the header switches the mode, and the choice is saved as `theme` (default dark).
 
 **sudo.** On Linux, if the user can't open the port, flashprog runs under `sudo -S` with the password piped in through stdin. On-Pico features are then disabled, because the direct port isn't accessible.

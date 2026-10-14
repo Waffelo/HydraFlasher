@@ -317,6 +317,12 @@ def is_generic_chip(name: str) -> bool:
     return name.startswith("unknown ") and "spi chip" in name
 
 
+def result_row(cs: int, status: str, secs: float, rest: str = "") -> str:
+    """One aligned line of a per-socket result table: "CS0  ✓ match       1.2s  rest".
+    The variable part (CRC, file name) goes last so it can't shift the columns."""
+    return f"CS{cs}  {status:<11} {secs:5.1f}s" + (f"  {rest}" if rest else "")
+
+
 def merge_ranges(ranges: Sequence[Range]) -> List[Range]:
     merged: List[Range] = []
     for start, end in sorted(ranges):
@@ -669,6 +675,7 @@ class HydraUI(ctk.CTk):
         self._progress_line_active = False
         self._in_step = False
         self._detail_first = False
+        self._log_block = ""  # "job" or "note": what the log last showed (log_note)
         self._status = "Ready"
         self._sub = ""
         self._pct: Optional[float] = None
@@ -1458,13 +1465,13 @@ class HydraUI(ctk.CTk):
                 if connected != self._port_connected:
                     if self._port_connected is not None:
                         if connected:
-                            self.log_line(
-                                f"{BULLET} Programmer connected on {cur}", "success"
+                            self.log_note(
+                                f"Programmer connected on {cur}", "success"
                             )
                             self._set_led(LED["IDLE"])
                         else:
-                            self.log_line(
-                                f"{BULLET} Programmer disconnected", "warning"
+                            self.log_note(
+                                f"Programmer disconnected", "warning"
                             )
                             self._reset_sockets()
                     self._port_connected = connected
@@ -1577,11 +1584,11 @@ class HydraUI(ctk.CTk):
                 continue
             if ident[0]:
                 uid = f" · uid {ident[1]}" if ident[1] else ""
-                self.log_line(
-                    f"{BULLET} CS{cs} chip inserted · {slot['name']}{uid}", "soft"
+                self.log_note(
+                    f"CS{cs} chip inserted · {slot['name']}{uid}", "soft"
                 )
             else:
-                self.log_line(f"{BULLET} CS{cs} chip removed", "dim")
+                self.log_note(f"CS{cs} chip removed", "dim")
         # With a chip override flashprog only tries that one definition, so a chip it
         # doesn't fit (or one flashprog hasn't identified yet) would never be detected
         if override != "Auto-detect" and (unknown or misfit):
@@ -1589,8 +1596,8 @@ class HydraUI(ctk.CTk):
             why = [f"unknown chip on CS{cs}" for cs in unknown] + [
                 f"CS{cs} holds {self.slots[cs]['name']}" for cs in misfit
             ]
-            self.log_line(
-                f"→ Chip override {override} doesn't fit ({'; '.join(why)}) – reset to Auto-detect",
+            self.log_note(
+                f"Chip override {override} doesn't fit ({'; '.join(why)}) – reset to Auto-detect",
                 "info",
             )
         if unknown:
@@ -1619,10 +1626,16 @@ class HydraUI(ctk.CTk):
     # ====================== Logging & Helpers ======================
     # Log layout:
     #   ● Job title                    log_job()
-    #     ⎿  1/4 Step                  log_step()
+    #     ╰  1/4 Step                  log_step()
     #          detail / tool output    log_detail()
     #   ● ✓ result
-    # Without steps, details hang directly under the job ("⎿" on the first one).
+    #
+    #   ● ⚠ message outside a job      log_note()
+    #     ╰  detail                    log_detail()
+    # Without steps, details hang directly under the job ("╰" on the first one).
+    # Only use symbols the log font has (all 1 cell wide): a fallback glyph is
+    # wider and shifts the line in the GUI, though a pasted copy looks fine.
+    # ⎿ is such a glyph (+6 px in JetBrains Mono); ╰ isn't.
     def _log_insert(self, chunks: Sequence[Tuple[str, str]]):
         follow = self._log_at_end()
         self.log.configure(state="normal")
@@ -1644,15 +1657,31 @@ class HydraUI(ctk.CTk):
         self.log_line(f"{BULLET} {title}", "accent")
         self._in_step = False
         self._detail_first = True
+        self._log_block = "job"
+
+    def log_note(self, text: str, kind: str = "info"):
+        """A message outside the job tree (events, refusals, choices): "● ⚠ text".
+        kind is the colour tag; warning and error also get an icon. Separated from a
+        finished job by an empty line. While a job runs, its tree is left alone."""
+        icon = {"warning": "⚠ ", "error": "✕ "}.get(kind, "")
+        if self.busy:
+            self.log_line(f"{BULLET} {icon}{text}", kind)
+            return
+        if self._log_block == "job":
+            self.log_line("")
+        self.log_line(f"{BULLET} {icon}{text}", kind)
+        self._log_block = "note"
+        self._in_step = False
+        self._detail_first = True  # a log_detail() after this hangs under the note
 
     def log_step(self, text: str):
-        self.log_line(f"  ⎿  {text}", "step")
+        self.log_line(f"  ╰  {text}", "step")
         self._in_step = True
 
     def _detail_prefix(self) -> str:
         if self._in_step:
             return "       "
-        prefix = "  ⎿  " if self._detail_first else "     "
+        prefix = "  ╰  " if self._detail_first else "     "
         self._detail_first = False
         return prefix
 
@@ -2049,8 +2078,8 @@ class HydraUI(ctk.CTk):
     def _auto_select_port(self, prefer: str = ""):
         ports = serial.tools.list_ports.comports()
         if not ports:
-            self.log_line(
-                "⚠ No serial ports detected – plug in the programmer.", "warning"
+            self.log_note(
+                "No serial ports detected – plug in the programmer.", "warning"
             )
             return
 
@@ -2059,18 +2088,18 @@ class HydraUI(ctk.CTk):
             if prefer and any(p.device == prefer for p in ports):
                 self.port_entry.delete(0, "end")
                 self.port_entry.insert(0, prefer)
-                self.log_line(f"{BULLET} Using saved port {prefer}", "info")
+                self.log_note(f"Using saved port {prefer}", "info")
                 return
-            self.log_line(
-                "⚠ No HydraFlasher/Pico detected – plug it in, it is picked up automatically.",
+            self.log_note(
+                "No HydraFlasher/Pico detected – plug it in, it is picked up automatically.",
                 "warning",
             )
             return
 
         self.port_entry.delete(0, "end")
         self.port_entry.insert(0, best.device)
-        self.log_line(
-            f"{BULLET} Programmer: {best.device} ({best.description or 'no description'})",
+        self.log_note(
+            f"Programmer: {best.device} ({best.description or 'no description'})",
             "success" if self._score_port(best) >= 5 else "info",
         )
 
@@ -2098,7 +2127,7 @@ class HydraUI(ctk.CTk):
         if self.sudo_password is None:
             pw = self._ask_password()
             if not pw:
-                self.log_line("→ Cancelled (no sudo password)", "dim")
+                self.log_note("Cancelled (no sudo password)", "dim")
                 return None
             check = subprocess.run(
                 ["sudo", "-S", "-k", "-p", "", "-v"],
@@ -2110,11 +2139,9 @@ class HydraUI(ctk.CTk):
                 self._alert("Sudo", "Wrong sudo password.", error=True)
                 return None
             self.sudo_password = pw
-            self.log_line(
-                f"{BULLET} Sudo password remembered for this session.", "info"
-            )
-            self.log_line(
-                "  Tip: add yourself to the 'dialout' group (then log in again) to avoid sudo.",
+            self.log_note("Sudo password remembered for this session.", "info")
+            self.log_detail(
+                "tip: add yourself to the 'dialout' group (then log in again) to avoid sudo",
                 "dim",
             )
         return True
@@ -2136,14 +2163,14 @@ class HydraUI(ctk.CTk):
         key identifies the job (default: its title) to refuse starting it twice."""
         queue = self.busy or bool(self._queue)
         if queue and (production or self._prod):
-            self.log_line("⚠ Another operation is still running.", "warning")
+            self.log_note("Another operation is still running.", "warning")
             return False
         title = title or status.rstrip("…")
         key = key or (title,)
         if key in {e["key"] for e in self._queue} or (
             self.busy and key == self._job_key
         ):
-            self.log_line(f"⚠ Already running or queued: {title}", "warning")
+            self.log_note(f"Already running or queued: {title}", "warning")
             return False
         port = self.port_entry.get().strip()
         if not port:
@@ -2193,8 +2220,8 @@ class HydraUI(ctk.CTk):
             self._queue.insert(0, entry)
         else:
             self._queue.append(entry)
-        self.log_line(
-            f"{BULLET} Queued #{self._queue.index(entry) + 1}: {entry['title']}", "soft"
+        self.log_note(
+            f"Queued #{self._queue.index(entry) + 1}: {entry['title']}", "soft"
         )
         self._refresh_sockets()
         self._refresh_busy_ui()
@@ -2277,7 +2304,7 @@ class HydraUI(ctk.CTk):
 
     def _clear_queue(self):
         if self._queue:
-            self.log_line(f"⚠ Cleared {len(self._queue)} queued job(s).", "warning")
+            self.log_note(f"Cleared {len(self._queue)} queued job(s).", "warning")
         self._queue.clear()
         self._queue_gen += 1
         self._queue_wait_scan = None
@@ -2521,7 +2548,7 @@ class HydraUI(ctk.CTk):
         ):
             return
         self._abort_requested = True
-        self.log_line("⚠ Stopping...", "warning")
+        self.log_note("Stopping...", "warning")
         proc = self._proc
         if proc:
             try:
@@ -2589,12 +2616,12 @@ class HydraUI(ctk.CTk):
             chips,
         )
         if idx is None:
-            self.log_line("✕ Chip selection cancelled.", "error")
+            self.log_note("Chip selection cancelled.", "error")
             return None
         if slot.get("jedec"):
             self._chip_choice[slot["jedec"]] = chips[idx]
         self.chip_override.set(chips[idx])
-        self.log_line(f"→ Selected chip: {chips[idx]}", "info")
+        self.log_note(f"Selected chip: {chips[idx]}", "info")
         return chips[idx]
 
     def _prompt_chip_selection(self, text: str, retry: Callable[[], None]):
@@ -2606,7 +2633,7 @@ class HydraUI(ctk.CTk):
             chips = [name for _, name, _ in FOUND_RE.findall(text)]
         chips = list(dict.fromkeys(chips))
         if not chips:
-            self.log_line("✕ Could not parse chip names.", "error")
+            self.log_note("Could not parse chip names.", "error")
             self._set_led(LED["FAILED"])
             return
         self._update_chip_list(chips)
@@ -2618,12 +2645,12 @@ class HydraUI(ctk.CTk):
             chips,
         )
         if idx is None:
-            self.log_line("✕ Chip selection cancelled.", "error")
+            self.log_note("Chip selection cancelled.", "error")
             self._set_idle_status("Operation cancelled", T["red"])
             self._set_led(LED["FAILED"])
             return
         self.chip_override.set(chips[idx])
-        self.log_line(f"→ Selected chip: {chips[idx]} – retrying", "info")
+        self.log_note(f"Selected chip: {chips[idx]} – retrying", "info")
         self._retrying = True
         try:
             retry()
@@ -2718,11 +2745,11 @@ class HydraUI(ctk.CTk):
                 self._socket_result[cs] = "pass" if ok else "fail"
                 if ok:
                     self._detail(
-                        f"CS{cs}  ✓ match     crc {crc:08x}  {secs:5.1f}s", "success"
+                        result_row(cs, "✓ match", secs, f"crc {crc:08x}"), "success"
                     )
                 else:
                     self._detail(
-                        f"CS{cs}  ✕ MISMATCH  crc {crc:08x} ≠ {expected:08x}  {secs:5.1f}s",
+                        result_row(cs, "✕ MISMATCH", secs, f"crc {crc:08x} ≠ {expected:08x}"),
                         "error",
                     )
                 self._record(cs, operation, ok, secs, image, expected)
@@ -2743,7 +2770,7 @@ class HydraUI(ctk.CTk):
             rc, _ = self._exec(["-v", path], cs, quiet=True, show_cmd=False)
             secs = time.monotonic() - t0
             self._detail(
-                f"CS{cs}  {'✓ match' if rc == 0 else '✕ MISMATCH'}  {secs:5.1f}s",
+                result_row(cs, "✓ match" if rc == 0 else "✕ MISMATCH", secs),
                 "success" if rc == 0 else "error",
             )
             self._record(cs, operation, rc == 0, secs, path, crc)
@@ -2793,12 +2820,14 @@ class HydraUI(ctk.CTk):
                 secs = time.monotonic() - t0
                 if mine:
                     self._detail(
-                        f"CS{cs}  {human_size(ranges_size(mine))} not blank → will be erased"
-                        f"  {secs:5.1f}s",
+                        result_row(
+                            cs, "⚠ not blank", secs,
+                            f"{human_size(ranges_size(mine))} will be erased",
+                        ),
                         "warning",
                     )
                 else:
-                    self._detail(f"CS{cs}  blank   {secs:5.1f}s", "success")
+                    self._detail(result_row(cs, "✓ blank", secs), "success")
                 dirty.update(mine)
         return merge_ranges(list(dirty))
 
@@ -2898,7 +2927,7 @@ class HydraUI(ctk.CTk):
     def _clear_chip_override(self):
         self.chip_override.set("Auto-detect")
         self._refresh_sockets()
-        self.log_line("→ Chip override cleared", "dim")
+        self.log_note("Chip override cleared", "dim")
 
     def _probe_all_sockets(self) -> List[dict]:
         """Worker thread: probe every socket one by one, return the detected ones."""
@@ -2929,20 +2958,26 @@ class HydraUI(ctk.CTk):
         self.after(0, self._refresh_sockets)
         return detected
 
-    def _log_slot_table(self):
-        for cs, d in enumerate(self.slots):
-            if d is None:
+    def _slot_rows(self, slots: Sequence[Optional[dict]]) -> List[Tuple[str, str]]:
+        """Aligned "CS0  ● name  size" lines (with log tags) for a socket table."""
+        shown = [d for d in slots if d]
+        width = min(max((len(d["name"]) for d in shown if d["detected"]), default=0), 32)
+        rows = []
+        for d in shown:
+            if not d["detected"]:
+                rows.append((f"CS{d['cs']}  ○ empty", "dim"))
                 continue
-            if d["detected"]:
-                size = human_size(d["size_kb"] * 1024) if d["size_kb"] else "?"
-                note = (
-                    "  (ambiguous – pick a chip override)"
-                    if len(d["chips"]) > 1
-                    else ""
-                )
-                self.log_detail(f"CS{cs}  ● {d['name']}  {size}{note}", "success")
-            else:
-                self.log_detail(f"CS{cs}  ○ empty", "dim")
+            size = human_size(d["size_kb"] * 1024) if d["size_kb"] else "?"
+            note = f"  · {len(d['chips'])} definitions match" if len(d["chips"]) > 1 else ""
+            tag = "warning" if d.get("unsupported") else "success"
+            rows.append(
+                (f"CS{d['cs']}  ● {trunc(d['name'], width):<{width}}  {size:>9}{note}", tag)
+            )
+        return rows
+
+    def _log_slot_table(self):
+        for text, tag in self._slot_rows(self.slots):
+            self.log_detail(text, tag)
 
     def _reprobe_and_check(
         self, expected_key: tuple
@@ -3075,7 +3110,7 @@ class HydraUI(ctk.CTk):
                     adjusted = f"{base}_truncated{ext}"
                     with open(path, "rb") as fin, open(adjusted, "wb") as fout:
                         fout.write(fin.read(chip_size))
-                    self.log_line(f"→ Created truncated file: {adjusted}", "info")
+                    self.log_note(f"Created truncated file: {adjusted}", "info")
                     return adjusted
             else:
                 if self._ask(
@@ -3088,13 +3123,13 @@ class HydraUI(ctk.CTk):
                     with open(path, "rb") as fin, open(adjusted, "wb") as fout:
                         fout.write(fin.read())
                         fout.write(b"\xFF" * (chip_size - file_size))
-                    self.log_line(f"→ Created padded file: {adjusted}", "info")
+                    self.log_note(f"Created padded file: {adjusted}", "info")
                     return adjusted
         except OSError as e:
             self._alert("Error", f"Could not create adjusted image:\n{e}", error=True)
             return None
 
-        self.log_line("→ Operation cancelled due to size mismatch", "dim")
+        self.log_note("Operation cancelled due to size mismatch", "dim")
         return None
 
     def _require_probed(self, cs: int) -> Optional[dict]:
@@ -3114,7 +3149,7 @@ class HydraUI(ctk.CTk):
         """True (and say why) if `op` can't be started while jobs run or are queued."""
         if op not in QUEUE_BLOCKED or not (self.busy or self._queue):
             return False
-        self.log_line(f"⚠ {QUEUE_BLOCKED[op]}", "warning")
+        self.log_note(f"{QUEUE_BLOCKED[op]}", "warning")
         return True
 
     def _refresh_busy_ui(self):
@@ -3145,11 +3180,11 @@ class HydraUI(ctk.CTk):
         if not usable:
             msg = self._broadcast_write_error() or "No chips detected."
             self._alert("Nothing to write", msg, error=True)
-            self.log_line(f"✕ {msg.splitlines()[0]}", "error")
+            self.log_note(f"{msg.splitlines()[0]}", "error")
             return None
         for d in detected:
             if d.get("unsupported"):
-                self.log_line(f"⚠ CS{d['cs']} skipped: unsupported chip", "warning")
+                self.log_note(f"CS{d['cs']} skipped: unsupported chip", "warning")
         return usable
 
     def _refresh_op_buttons(self):
@@ -3198,7 +3233,16 @@ class HydraUI(ctk.CTk):
         err = self._same_type_error(detected)
         if err:
             self._alert("Cannot use broadcast", err, error=True)
-            self.log_line(f"✕ {err.splitlines()[0]}", "error")
+            if err.startswith("The chips in the sockets are not the same type"):
+                self.log_note("Can't use ALL: the chips aren't all the same type", "error")
+                for text, tag in self._slot_rows(detected):
+                    self.log_detail(text, tag)
+                self.log_detail(
+                    "tick one-by-one to write them in turn, or select single sockets",
+                    "dim",
+                )
+            else:
+                self.log_note(err.splitlines()[0], "error")
             return None
         return detected
 
@@ -3282,7 +3326,8 @@ class HydraUI(ctk.CTk):
                 return False, "No chips detected in any socket."
             if self._same_type_error(detected):
                 self._detail(
-                    "⚠ different chip types – broadcast (CS6) write/erase is disabled",
+                    "⚠ chip types differ: broadcast needs identical chips – "
+                    "use one-by-one to write them in turn",
                     "warning",
                 )
             return (
@@ -3333,7 +3378,7 @@ class HydraUI(ctk.CTk):
     def read_all(self):
         folder = self._ask_directory("Select folder to save ALL chip dumps")
         if not folder:
-            self.log_line("→ Read ALL cancelled (no folder selected)", "dim")
+            self.log_note("Read ALL cancelled (no folder selected)", "dim")
             return
         self._start_read_all(folder)
 
@@ -3357,7 +3402,7 @@ class HydraUI(ctk.CTk):
                 )
                 secs = time.monotonic() - t0
                 self._detail(
-                    f"CS{d['cs']}  {'✓ saved' if rc == 0 else '✕ FAILED'}  {filename}  {secs:5.1f}s",
+                    result_row(d["cs"], "✓ saved" if rc == 0 else "✕ FAILED", secs, filename),
                     "success" if rc == 0 else "error",
                 )
                 failed += rc != 0
@@ -3442,7 +3487,7 @@ class HydraUI(ctk.CTk):
             err = self._broadcast_write_error()
             if err and self._one_by_one():
                 self._alert("Nothing to write", err, error=True)
-                self.log_line(f"✕ {err.splitlines()[0]}", "error")
+                self.log_note(f"{err.splitlines()[0]}", "error")
                 return
             if err and not self._require_same_type():
                 return
@@ -3851,14 +3896,14 @@ class HydraUI(ctk.CTk):
             p = self._prod
             self._prod = None
             self.write_button.configure(text="write")
-            self.log_line(
-                f"{BULLET} Production mode off · {p['batch']} batch(es), ✓ {p['ok']} ✕ {p['fail']}",
+            self.log_note(
+                f"Production mode off · {p['batch']} batch(es), ✓ {p['ok']} ✕ {p['fail']}",
                 "soft",
             )
             self._update_footer()
             return
         if self.busy or self._queue:
-            self.log_line("⚠ Wait for the running/queued jobs first.", "warning")
+            self.log_note("Wait for the running/queued jobs first.", "warning")
             self.production_var.set(False)
             return
         path = self._ask_open_file(
@@ -3922,7 +3967,7 @@ class HydraUI(ctk.CTk):
             detected = self._detected_slots()
             err = self._same_type_error(detected)
             if err:
-                self.log_line(f"✕ {err.splitlines()[0]}", "error")
+                self.log_note(f"{err.splitlines()[0]}", "error")
                 self._set_idle_status(err.splitlines()[0], T["red"])
                 return
         else:
@@ -3935,7 +3980,7 @@ class HydraUI(ctk.CTk):
                 f"Image is {human_size(size)} but the chips are "
                 f"{human_size(detected[0]['size_kb'] * 1024)} – pad/trim the image first."
             )
-            self.log_line(f"✕ {msg}", "error")
+            self.log_note(f"{msg}", "error")
             self._set_idle_status(msg, T["red"])
             return
         self._prod["batch"] += 1
@@ -3988,7 +4033,7 @@ class HydraUI(ctk.CTk):
     def _clear_recent_files(self):
         self.recent_files.clear()
         self.save_config()
-        self.log_line("→ Recent files list cleared", "dim")
+        self.log_note("Recent files list cleared", "dim")
 
     def _add_recent_file(self, path: str):
         if path in self.recent_files:
