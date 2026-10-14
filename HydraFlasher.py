@@ -1117,16 +1117,24 @@ class HydraUI(ctk.CTk):
         )
         self.log_menu.add_separator()
         self.log_menu.add_command(label="Select all", command=self._select_all_log)
-        buttons = ("<Button-2>", "<Control-Button-1>") if self.platform == "Darwin" else ("<Button-3>",)
+        # Opened on button *release*: opened on press, the release lands on the
+        # menu, which takes it as a click on the item under the pointer and closes
+        buttons = (
+            ("<ButtonRelease-2>", "<Control-ButtonRelease-1>")
+            if self.platform == "Darwin"
+            else ("<ButtonRelease-3>",)
+        )
         for seq in buttons:
             tb.bind(seq, self._show_log_menu)
 
     def _show_log_menu(self, event):
         has_sel = bool(self.log._textbox.tag_ranges("sel"))
         self.log_menu.entryconfigure("Copy", state="normal" if has_sel else "disabled")
-        try:
-            self.log_menu.tk_popup(event.x_root, event.y_root)
-        finally:
+        # 1 px off the pointer, so the pointer isn't already over the first item
+        self.log_menu.tk_popup(event.x_root + 1, event.y_root + 1)
+        if self.is_windows:
+            # Only there does tk_popup wait until the menu closes; on X11 releasing
+            # the grab right away makes the menu vanish
             self.log_menu.grab_release()
         return "break"
 
