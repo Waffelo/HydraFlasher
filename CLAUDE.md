@@ -8,6 +8,8 @@ HydraFlasher: a customtkinter desktop GUI (`HydraFlasher.py`, single file) that 
 
 `OLD_Ver/` and `serprog_fork/` are gitignored leftovers. Don't edit them; the live firmware source is `firmware/`.
 
+**A user-visible change isn't finished until the user-guide wiki is updated and pushed.** See [User guide wiki](#user-guide-wiki-keep-it-in-sync) below.
+
 ## Commands
 
 ```sh
@@ -65,9 +67,21 @@ A new command touches three places: `serprog.h`, the hand-built `cmdmap` bitmap 
 
 ## User guide wiki (keep it in sync!)
 
-The user guide (features, use cases, troubleshooting) is the GitHub wiki, a separate repo: `https://github.com/Waffelo/HydraFlasher.wiki.git`. It isn't checked out in this repo. **Every user-visible change must update the affected wiki pages**, for example new or changed buttons, settings, messages, shortcuts or behaviour. Check `Troubleshooting.md` (message tables) and `Reference.md` (shortcuts, files, saved settings) too.
+The user guide (features, use cases, troubleshooting) is the GitHub wiki: https://github.com/Waffelo/HydraFlasher/wiki. It's a separate repo (`https://github.com/Waffelo/HydraFlasher.wiki.git`, branch `master`) and isn't checked out in this repo. The user requires it to stay current: **every user-visible change must update the affected wiki pages, in the same task, without being asked.** User-visible means, for example, new or changed buttons, settings, messages, shortcuts, file locations or behaviour.
 
-To update it: clone the wiki repo into a temporary folder, edit, commit and push. Pages link to each other as `[text](Page-Name#anchor)`; keep anchors valid when renaming headings.
+For every change:
+1. Clone the wiki repo into a temporary folder (not into this repo).
+2. Update every affected page:
+   - the feature pages: Operations, Job Queue, Chip Detection, Production Mode;
+   - `Getting-Started.md`: card states and the settings table;
+   - `Troubleshooting.md`: the message tables;
+   - `Reference.md`: shortcuts, files and saved settings;
+   - `Use-Cases.md` and `Home.md`, if a feature is added or removed.
+3. Keep links valid. Pages link to each other as `[text](Page-Name#anchor)`, and the anchors come from headings.
+4. Commit with a message naming the change, push to `master`, and delete the temporary clone.
+5. In the report, list the pages you changed. If nothing user-visible changed, say so.
+
+Pushing uses the HTTPS credentials stored in git (SSH ports are blocked from Claude sessions). If the push fails, report it; don't skip the update silently.
 
 ## License
 
