@@ -95,10 +95,13 @@ Defined in `serprog.h`. Multi-byte values are little-endian; every command answe
 | `0x21` | `S_CMD_BOOTSEL` | none | ACK, then the Pico reboots into its USB bootloader (`RPI-RP2` drive) |
 | `0x22` | `S_CMD_CRC32` | cs (1), address bytes (1: 3 or 4), address (4), length (4) | ACK + CRC32 (4); NAK if cs ≥ 10 (no broadcast), address bytes isn't 3 or 4, or length is 0 |
 | `0x23` | `S_CMD_Q_NUM_CS` | none | ACK + number of CS lines (1 byte, 10). The broadcast index is the same number. |
+| `0x24` | `S_CMD_Q_CS_WIRED` | none | ACK + bitmap (2 bytes): bit *n* set = CS*n* has a pull-up, so a socket is wired to it (since 1.2) |
 
 `S_CMD_CRC32` reads the range with `READ` (`03h`), or with `READ4B` (`13h`) when 4 address bytes are given. Chips over 16 MiB need 4 address bytes. The result is the standard zlib/IEEE CRC32, the same as Python's `zlib.crc32`. The command can't use the broadcast, since a broadcast read would be garbage.
 
 `S_CMD_Q_NUM_CS` tells a host how many CS lines there are and so where the broadcast is. Firmware older than this command has six CS lines (CS0 to CS5) with the broadcast on 6, the LEDs on GP11 to GP13 and no `0x23` in its command map; the HydraFlasher GUI handles both.
+
+`S_CMD_Q_CS_WIRED` detects which CS lines lead to a socket. Put a **10 kΩ resistor from each socket's /CS to 3V3** on the socket board (good practice anyway: it keeps the chips deselected while the Pico boots). For the query, each CS pin briefly becomes an input with the RP2040's internal pull-down (50–80 kΩ): a wired line with its pull-up reads high (about 2.75 V), an open one low. The pin is set high again before it drives, so no chip sees a select glitch. Don't go above about 22 kΩ, or the line no longer reads clearly high.
 
 ## Notes for developers
 

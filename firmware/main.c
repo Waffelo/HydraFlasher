@@ -28,7 +28,8 @@
 // Firmware version, reported by S_CMD_Q_PGMNAME as "HydraFlasher <version>" (16 bytes
 // at most). Releases are tagged fw-v<version>, CI checks that the two match.
 // 1.1: 10 chip selects, LEDs on GP16-18, S_CMD_Q_NUM_CS. Older firmware: "pico-serprog".
-#define FW_VERSION  "1.1"
+// 1.2: S_CMD_Q_CS_WIRED (which CS lines a socket board pulls up).
+#define FW_VERSION  "1.2"
 
 #define SPI_IF      spi0        // Which PL022 to use
 #define SPI_BAUD    10000000    // Default baudrate (10 MHz)
@@ -148,6 +149,25 @@ static inline void cs_deselect(void) {
         gpio_put(cs_pins[active_cs_idx], 1);
     }
     sleep_us(1);
+}
+
+// Which CS lines are wired to a socket. A socket board pulls each /CS up to 3V3
+// (10 kOhm), which wins against the RP2040's internal pull-down (50-80 kOhm): with
+// the pin as an input and the pull-down on, a wired line reads high, an open one low.
+static uint16_t detect_wired_cs(void)
+{
+    uint16_t wired = 0;
+    for (int i = 0; i < NUM_CS_PINS; i++) {
+        uint pin = cs_pins[i];
+        gpio_set_dir(pin, GPIO_IN);
+        gpio_pull_down(pin);
+        sleep_us(200);  // let the line settle (cable capacitance)
+        if (gpio_get(pin))
+            wired |= 1u << i;
+        gpio_put(pin, 1);  // deselected before it drives again: no low glitch
+        gpio_set_dir(pin, GPIO_OUT);
+    }
+    return wired;
 }
 
 static void dma_init(void)
@@ -351,7 +371,8 @@ static void command_loop(void)
                 [S_CMD_SET_LED / 32] = (1UL << (S_CMD_SET_LED % 32)) |
                                        (1UL << (S_CMD_BOOTSEL % 32)) |
                                        (1UL << (S_CMD_CRC32 % 32))   |
-                                       (1UL << (S_CMD_Q_NUM_CS % 32)),
+                                       (1UL << (S_CMD_Q_NUM_CS % 32)) |
+                                       (1UL << (S_CMD_Q_CS_WIRED % 32)),
             };
 
             sendbyte_blocking(S_ACK);
@@ -543,6 +564,16 @@ static void command_loop(void)
             sendbyte_blocking(S_ACK);
             sendbyte_blocking(NUM_CS_PINS);
             break;
+
+        case S_CMD_Q_CS_WIRED:
+        {
+            // ACK + 2 bytes LE: bit n set = CS n has a pull-up (a socket is wired)
+            uint16_t wired = detect_wired_cs();
+            sendbyte_blocking(S_ACK);
+            sendbyte_blocking(wired & 0xFF);
+            sendbyte_blocking(wired >> 8);
+            break;
+        }
 
         case S_CMD_BOOTSEL:
             // Lets build.sh flash new firmware without pressing the BOOTSEL button

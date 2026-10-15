@@ -53,6 +53,7 @@ All chips must be the same type (`_require_same_type`).
 - `0x21` BOOTSEL (mirrored as `S_CMD_BOOTSEL`; the firmware update and `firmware/build.sh flash` send it)
 - `0x22` CRC32 (mirrored as `S_CMD_CRC32`)
 - `0x23` Q_NUM_CS, the number of CS lines = the broadcast index (mirrored as `S_CMD_Q_NUM_CS`)
+- `0x24` Q_CS_WIRED (firmware 1.2), 2-byte bitmap of CS lines with an external pull-up, i.e. wired to a socket: each pin is read as an input with the RP2040's internal pull-down, which a 10 kΩ pull-up to 3V3 overrides (`detect_wired_cs` in `main.c`). Not used by the GUI yet.
 
 A new command touches three places: `serprog.h`, the hand-built `cmdmap` bitmap in `firmware/main.c` (commands ≥ 32 go in the second word), and the GUI constant. If it's missing from `cmdmap`, the GUI never sees it. The GUI detects whether the firmware supports them through `S_CMD_Q_CMDMAP` (`self._fw_caps`). The fast "on Pico" verify and the partial-write/blank-check path need CRC32 support and direct (non-sudo) port access (`_can_use_pico`). Without either, they fall back to plain flashprog.
 
