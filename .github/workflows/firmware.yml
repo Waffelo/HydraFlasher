@@ -59,4 +59,6 @@ jobs:
           # The changelog section, followed by GitHub's list of merged pull requests
           body_path: firmware/build/release-notes.md
           generate_release_notes: true
+          # "Latest" on the releases page stays with the app download
+          make_latest: "false"
           files: firmware/build/hydraflasher-fw-*.uf2

@@ -1,0 +1,8 @@
+# Exact versions for the release packages (packaging/build.py, CI). Tested with
+# the app; bump deliberately and re-test, don't float.
+customtkinter==5.2.2
+darkdetect==0.8.0
+pyserial==3.5
+plyer==2.1.0
+tkinterdnd2==0.6.4
+pyinstaller==6.22.3

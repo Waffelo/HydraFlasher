@@ -23,3 +23,8 @@ tests/*.bin
 tests/*.txt
 tests/*.lock
 tests/*.png
+
+# App packages (packaging/build.py)
+build/
+dist/
+release/

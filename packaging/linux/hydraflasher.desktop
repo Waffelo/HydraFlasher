@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=HydraFlasher
+GenericName=SPI flash programmer
+Comment=Read, erase, write and verify SPI flash chips with a Raspberry Pi Pico
+Exec=HydraFlasher
+Icon=hydraflasher
+Terminal=false
+Categories=Development;Electronics;
+Keywords=flash;flashprog;flashrom;spi;bios;pico;
