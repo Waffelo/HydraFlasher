@@ -12,7 +12,7 @@ A desktop GUI for flashing SPI flash chips with [flashprog](https://flashprog.or
 (or flashrom) through a Raspberry Pi Pico running a modified
 [pico-serprog](https://github.com/opensensor/pico-serprog) firmware.
 
-The firmware adds up to six chip-select lines, so one Pico can serve several
+The firmware adds up to ten chip-select lines, so one Pico can serve several
 sockets: HydraFlasher scans them live, flashes and verifies each chip, and logs
 every run.
 
@@ -31,8 +31,22 @@ every run.
 | --- | --- |
 | `HydraFlasher.py` | The GUI (Python, customtkinter) |
 | `firmware/` | Pico serprog firmware with multi-CS, status LEDs and on-device CRC32 |
+| `packaging/` | Builds the Windows installer, portable `.exe` and Linux AppImage |
 
-## Running the GUI
+## Download
+
+Get the newest **[release](https://github.com/Waffelo/HydraFlasher/releases/latest)**:
+
+| System | File |
+| --- | --- |
+| Windows | `HydraFlasher-Setup-<version>.exe` (installer) or `HydraFlasher-<version>-portable.exe` (no install) |
+| Linux | `HydraFlasher-<version>-x86_64.AppImage`: `chmod +x`, then run it |
+
+You still need `flashprog` (or `flashrom`); HydraFlasher asks for it on the first
+start if it can't find it. The Pico firmware has its own releases (`fw-v…`), which
+the app installs from its settings page.
+
+## Running from source
 
 Needs Python 3.8+ with Tk, and `flashprog` or `flashrom` on the `PATH`.
 
