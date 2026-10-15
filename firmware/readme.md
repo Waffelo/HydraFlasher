@@ -44,7 +44,7 @@ You need the [Pico SDK](https://github.com/raspberrypi/pico-sdk), `cmake` and `g
 
 `./build.sh flash` copies the firmware to the Pico's `RPI-RP2` drive. If no such drive is mounted but a Pico with this firmware is plugged in, it first reboots that Pico into its bootloader (custom command `0x21`, see below). For a Pico without this firmware, hold **BOOTSEL** while plugging it in.
 
-GitHub Actions builds the firmware on every push that touches `firmware/` (against pico-sdk 1.5.0) and keeps `pico_serprog.uf2` and `.elf` as the `pico_serprog` build artifact.
+GitHub Actions builds the firmware on every push that touches `firmware/` (against pico-sdk 2.2.0, whose TinyUSB 0.18.0 the patched `tinyusb_patched/cdc_device.c` is based on) and keeps `pico_serprog.uf2` and `.elf` as the `pico_serprog` build artifact.
 
 **Releases.** Bump `FW_VERSION` in `main.c`, commit, then push a matching tag:
 

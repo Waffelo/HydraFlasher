@@ -21,7 +21,8 @@ jobs:
       # exists after the checkout
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi cmake
-      - run: git clone --depth 1 -b 1.5.0 https://github.com/raspberrypi/pico-sdk
+      # 2.2.0 brings TinyUSB 0.18.0, which tinyusb_patched/cdc_device.c is based on
+      - run: git clone --depth 1 -b 2.2.0 https://github.com/raspberrypi/pico-sdk
       - run: cd pico-sdk && git submodule update --init lib/tinyusb
       - run: ./build.sh
       - uses: actions/upload-artifact@v4
