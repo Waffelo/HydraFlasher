@@ -13,17 +13,33 @@ if [ -z "$HYDRA_TEST_INNER" ] && [ -z "$VISIBLE" ]; then
     if command -v xvfb-run >/dev/null 2>&1; then
         exec xvfb-run -a -s "-screen 0 1280x1024x24" "$here/run_all.sh" "$@"
     fi
-    if command -v kwin_wayland >/dev/null 2>&1; then
+    if command -v kwin_wayland >/dev/null 2>&1 && command -v dbus-run-session >/dev/null 2>&1; then
         tmp=$(mktemp -d)
-        # kwin starts one command line: wrap ours (with its arguments) in a script
+        mkdir -p "$tmp/config" "$tmp/data" "$tmp/state" "$tmp/cache"
+        # kwin starts one command line: wrap ours (with its arguments) in a script.
+        # The tests get the user's XDG folders back (fonts, ...), only KWin is boxed in.
         {
-            printf '#!/bin/sh\n"%s"' "$here/run_all.sh"
+            printf '#!/bin/sh\n'
+            for v in XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME; do
+                eval "val=\${$v-}"
+                if [ -n "$val" ]; then printf 'export %s="%s"\n' "$v" "$val"
+                else printf 'unset %s\n' "$v"; fi
+            done
+            printf '"%s"' "$here/run_all.sh"
             for a in "$@"; do printf ' "%s"' "$a"; done
-            printf '\necho $? > "%s/rc"\n' "$tmp"
+            printf ' > "%s/out" 2>&1\necho $? > "%s/rc"\n' "$tmp" "$tmp"
         } > "$tmp/inner.sh"
         chmod +x "$tmp/inner.sh"
-        kwin_wayland --virtual --xwayland --socket "hydra-test-$$" \
-            --width 1280 --height 1024 --exit-with-session "$tmp/inner.sh" 2>/dev/null
+        # Its own D-Bus session and config: on the desktop's bus this KWin registers
+        # the same global shortcuts as the real one and, when it quits, marks them
+        # inactive, which disables the desktop's shortcuts. With the user's config
+        # it would also add its virtual monitor to kwinoutputconfig.json.
+        XDG_CONFIG_HOME="$tmp/config" XDG_DATA_HOME="$tmp/data" \
+        XDG_STATE_HOME="$tmp/state" XDG_CACHE_HOME="$tmp/cache" \
+            dbus-run-session -- kwin_wayland --virtual --xwayland \
+            --socket "hydra-test-$$" --width 1280 --height 1024 \
+            --exit-with-session "$tmp/inner.sh" >/dev/null 2>&1
+        cat "$tmp/out" 2>/dev/null
         rc=$(cat "$tmp/rc" 2>/dev/null || echo 1)
         rm -rf "$tmp"
         exit "$rc"
