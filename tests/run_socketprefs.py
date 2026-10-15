@@ -58,6 +58,8 @@ class FakeSerial:  # what _set_led opens
     def __exit__(self, *a): pass
     def write(self, data): led_writes.append(data[1])
     def read(self, n): return b"\x06"
+    def reset_output_buffer(self): pass
+    def close(self): pass
 
 
 H.Programmer = FakeProgrammer
@@ -160,8 +162,12 @@ def s4():
     app._open_settings()
     app._on_sockets_choice("4")
     app._close_settings()
-    # LEDs on: idle at once, then the job states
+    # LEDs on: idle at once, then the job states (sent from a thread)
     app.leds_var.set(True)
+    app.after(400, s4b)
+
+
+def s4b():
     check("LEDs on: switched to idle", led_writes == [H.LED["IDLE"]])
     app._start_probe(0)
     wait_idle(s5)
@@ -172,6 +178,10 @@ def s5():
           H.LED["RUNNING"] in led_writes and H.LED["SUCCESS"] in led_writes)
     led_writes.clear()
     app.leds_var.set(False)
+    app.after(400, s5b)
+
+
+def s5b():
     check("LEDs off: switched off once", led_writes == [H.LED["IDLE"]])
     led_writes.clear()
     # Scan on: chips read at the chosen speed

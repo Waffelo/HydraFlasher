@@ -102,6 +102,8 @@ SCAN_SPEED_HZ = 8_000_000
 SCAN_INTERVALS = {"0.5 s": 500, "1 s": 1000, "2 s": 2000, "5 s": 5000}
 SCAN_SPEEDS = ["1M", "2M", "4M", "8M", "12M"]
 SOCKET_NAME_MAX = 16
+# A Pico that doesn't answer (other or hung firmware) isn't polled for this long
+UNRESPONSIVE_PAUSE_S = 30
 ERASE_BLOCK = 64 * 1024  # granularity of partial writes
 BLANK_CHECK_PIECE = 1024 * 1024  # granularity of the blank check
 PARTIAL_MAX_USED = 0.9  # above this fraction of used blocks, just write everything
@@ -417,6 +419,20 @@ def ranges_size(ranges: Sequence[Range]) -> int:
     return sum(e - s for s, e in ranges)
 
 
+def close_serial(ser):
+    """Close a serial port without waiting for unsent bytes: a Pico that stopped
+    reading would make close() wait for the kernel's drain timeout (30 s for USB
+    serial), with the port lock held."""
+    try:
+        ser.reset_output_buffer()
+    except Exception:
+        pass
+    try:
+        ser.close()
+    except Exception:
+        pass
+
+
 def read_uf2(path: str) -> dict:
     """Check that a .uf2 file is an image for the Pico (RP2040) and find the
     HydraFlasher version in it ("HydraFlasher x.y", the S_CMD_Q_PGMNAME answer).
@@ -509,6 +525,16 @@ def app_commit() -> str:
     return head.stdout.strip() + (" modified" if changed else "")
 
 
+def rp2_drive_present() -> bool:
+    """Cheap check (UI thread) for a Pico in bootloader mode: the RPI-RP2 drive."""
+    system = platform.system()
+    if system == "Linux":
+        return os.path.exists(f"/dev/disk/by-label/{RP2_LABEL}")
+    if system == "Darwin":
+        return os.path.isdir(f"/Volumes/{RP2_LABEL}")
+    return find_rp2_drive(mount=False) is not None  # Windows: drive letters, fast
+
+
 def find_rp2_drive(mount: bool = True) -> Optional[str]:
     """Where the Pico's bootloader drive (RPI-RP2) is mounted, None while there's
     none. On Linux it's mounted with udisksctl when the desktop doesn't do it."""
@@ -565,6 +591,10 @@ class ProgrammerError(Exception):
     pass
 
 
+class NoAnswer(ProgrammerError):
+    """The Pico took a command but didn't answer at all (not just a NAK)."""
+
+
 class Programmer:
     """Direct serprog access for what flashprog can't do: live socket scan,
     unique IDs and the firmware's on-device CRC32 (S_CMD_CRC32)."""
@@ -573,10 +603,7 @@ class Programmer:
         self.ser = serial.Serial(port, SERIAL_BAUD, timeout=1, write_timeout=1)
 
     def close(self):
-        try:
-            self.ser.close()
-        except Exception:
-            pass
+        close_serial(self.ser)
 
     def _cmd(
         self, cmd: int, params: bytes = b"", nresp: int = 0, timeout: float = 1.0
@@ -584,10 +611,10 @@ class Programmer:
         self.ser.timeout = timeout
         self.ser.write(bytes([cmd]) + params)
         ack = self.ser.read(1)
+        if not ack:
+            raise NoAnswer(f"command 0x{cmd:02x}: no answer")
         if ack != bytes([S_ACK]):
-            raise ProgrammerError(
-                f"command 0x{cmd:02x}: {'NAK' if ack else 'no answer'}"
-            )
+            raise ProgrammerError(f"command 0x{cmd:02x}: NAK")
         data = self.ser.read(nresp) if nresp else b""
         if len(data) != nresp:
             raise ProgrammerError(f"command 0x{cmd:02x}: short answer")
@@ -925,6 +952,13 @@ class HydraUI(ctk.CTk):
         # CS lines of the connected firmware (None: not asked yet, e.g. under sudo)
         self._fw_cs: Optional[int] = None
         self._fw_name: Optional[str] = None  # its S_CMD_Q_PGMNAME answer
+        # A port whose Pico doesn't answer: (port, monotonic time to try again)
+        self._unresponsive: Optional[Tuple[str, float]] = None
+        self._rp2_present = False  # a Pico in bootloader mode (RPI-RP2) is plugged in
+        # LED updates run in a thread: opening the port can take seconds
+        self._led_mutex = threading.Lock()
+        self._led_want: Optional[Tuple[str, int]] = None
+        self._led_running = False
         # Settings page; the newest firmware release on GitHub (see _check_release)
         self._settings_open = False
         self._settings_view = None
@@ -1867,6 +1901,18 @@ class HydraUI(ctk.CTk):
         self._refresh_sockets()
         self._refresh_settings()
 
+    def _update_conn_label(self):
+        cur = self.port_entry.get().strip()
+        if not self._port_connected:
+            text, color = "○ no programmer", T["red"]
+        elif self._is_unresponsive(cur) or (
+            self._unresponsive and self._unresponsive[0] == cur
+        ):
+            text, color = f"● {cur} · not responding", T["yellow"]
+        else:
+            text, color = f"● {cur}", T["green"]
+        self.conn_label.configure(text=text, text_color=color)
+
     def _watch_ports(self):
         """Poll for the programmer being plugged in / removed."""
         try:
@@ -1895,13 +1941,21 @@ class HydraUI(ctk.CTk):
                             self.log_note(
                                 f"Programmer disconnected", "warning"
                             )
+                            self._unresponsive = None  # replugged: try it afresh
                             self._reset_sockets()
                     self._port_connected = connected
                     self._refresh_settings()
-                self.conn_label.configure(
-                    text=f"● {cur}" if connected else "○ no programmer",
-                    text_color=T["green"] if connected else T["red"],
-                )
+                self._update_conn_label()
+                rp2 = rp2_drive_present()
+                if rp2 and not self._rp2_present:
+                    self.log_note(
+                        "A Pico in bootloader mode (RPI-RP2) is plugged in: install "
+                        "firmware on it from settings → firmware.",
+                        "info",
+                    )
+                if rp2 != self._rp2_present:
+                    self._rp2_present = rp2
+                    self._refresh_settings()
         except Exception:
             pass
         self.after(2000, self._watch_ports)
@@ -1921,6 +1975,7 @@ class HydraUI(ctk.CTk):
                 and port
                 and self._port_accessible(port)
                 and (chips or self._fw_caps is None)
+                and not self._is_unresponsive(port)
             ):
                 self._scan_running = True
                 threading.Thread(
@@ -1935,12 +1990,37 @@ class HydraUI(ctk.CTk):
             delay = min(delay, SCAN_INTERVAL_MS)
         self.after(delay, self._scan_tick)
 
+    def _is_unresponsive(self, port: str) -> bool:
+        """port's Pico didn't answer recently (it's tried again after a pause)."""
+        u = self._unresponsive
+        return bool(u) and u[0] == port and time.monotonic() < u[1]
+
+    def _mark_unresponsive(self, port: str, why: str):
+        first = not (self._unresponsive and self._unresponsive[0] == port)
+        self._unresponsive = (port, time.monotonic() + UNRESPONSIVE_PAUSE_S)
+        if first:
+            self.log_note(
+                f"The Pico on {port} doesn't answer ({why}). It may run other or "
+                "older firmware, or hang. To install HydraFlasher firmware: hold "
+                "BOOTSEL while plugging it in again, then settings → firmware.",
+                "warning",
+            )
+            self._update_conn_label()
+            self._refresh_settings()
+
+    def _clear_unresponsive(self, port: str):
+        if self._unresponsive and self._unresponsive[0] == port:
+            self._unresponsive = None
+            self.log_note(f"The Pico on {port} answers again", "info")
+            self._update_conn_label()
+            self._refresh_settings()
+
     def _scan_hz(self) -> int:
         return parse_speed(self.scan_speed_var.get())
 
     def _scan_worker(self, port: str, hz: int = SCAN_SPEED_HZ, chips: bool = True):
         """chips=False: only ask the firmware (command map, name, CS lines)."""
-        results = None
+        results, silent = None, False
         if self._port_lock.acquire(blocking=False):
             try:
                 prog = Programmer(port)
@@ -1964,10 +2044,16 @@ class HydraUI(ctk.CTk):
                         prog.pins(False)
                 finally:
                     prog.close()
+            except (NoAnswer, serial.SerialTimeoutException) as e:
+                # Other firmware, or a hung one: it takes bytes in, or not even that
+                results, silent = None, True
+                self.after(0, self._mark_unresponsive, port, str(e))
             except Exception:
                 results = None
             finally:
                 self._port_lock.release()
+        if results is not None or not silent:
+            self.after(0, self._clear_unresponsive, port)
         self.after(0, self._apply_scan, results)
 
     def _on_fw_cs(self):
@@ -2496,23 +2582,51 @@ class HydraUI(ctk.CTk):
             and self._port_accessible(port)
         )
 
-    def _set_led(self, state: int, force: bool = False):
+    def _set_led(self, state: int, force: bool = False, wait: bool = False):
         """Best-effort LED update; never prompts and never raises. Nothing while the
-        LEDs are turned off in the settings (force: switch them off once)."""
+        LEDs are turned off in the settings (force: switch them off once). Sent from
+        a thread, since opening the port can take seconds; only the newest state
+        waiting is sent. wait: send it now (when quitting)."""
         if not (self.leds_var.get() or force):
             return
         port = self.port_entry.get().strip()
-        if not port or (not self.is_windows and not os.path.exists(port)):
+        if not port or self._is_unresponsive(port):
+            return
+        if wait:
+            self._send_led(port, state)
+            return
+        with self._led_mutex:
+            self._led_want = (port, state)
+            if self._led_running:
+                return
+            self._led_running = True
+        threading.Thread(target=self._led_worker, daemon=True).start()
+
+    def _led_worker(self):
+        while True:
+            with self._led_mutex:
+                job, self._led_want = self._led_want, None
+                if job is None:
+                    self._led_running = False
+                    return
+            self._send_led(*job)
+
+    def _send_led(self, port: str, state: int):
+        if not self.is_windows and not os.path.exists(port):
             return
         if not self._port_lock.acquire(timeout=1.0):
             return
         try:
             if self._port_accessible(port):
-                with serial.Serial(
-                    port, SERIAL_BAUD, timeout=0.5, write_timeout=0.5
-                ) as ser:
+                ser = serial.Serial(port, SERIAL_BAUD, timeout=0.5, write_timeout=0.5)
+                try:
                     ser.write(bytes([S_CMD_SET_LED, state]))
                     ser.read(1)
+                except serial.SerialTimeoutException as e:
+                    # The Pico doesn't take data: tell the scan (and the user)
+                    self.after(0, self._mark_unresponsive, port, str(e))
+                finally:
+                    close_serial(ser)
             elif self.sudo_password:
                 script = (
                     "import sys, serial\n"
@@ -2666,6 +2780,13 @@ class HydraUI(ctk.CTk):
             self.log_note(f"Already running or queued: {title}", "warning")
             return False
         port = self.port_entry.get().strip()
+        if needs_port and self._unresponsive and self._unresponsive[0] == port:
+            self.log_note(
+                f"The Pico on {port} doesn't answer – {title} not started. Hold BOOTSEL "
+                "while plugging it in, then install firmware (settings → firmware).",
+                "error",
+            )
+            return False
         if needs_port:
             if not port:
                 self._alert(
@@ -4812,8 +4933,17 @@ class HydraUI(ctk.CTk):
 
     def _fw_summary(self) -> Tuple[str, str]:
         """What the Pico's firmware is, as (text, colour) for the settings page."""
+        if self._rp2_present:
+            return "a Pico in bootloader mode (RPI-RP2) · install firmware below", T["accent"]
         if not self._port_connected:
             return "no programmer connected", T["dim"]
+        port = self.port_entry.get().strip()
+        if self._unresponsive and self._unresponsive[0] == port:
+            return (
+                "not responding (other or hung firmware) · hold BOOTSEL while "
+                "plugging it in, then install",
+                T["yellow"],
+            )
         if self._fw_caps is None:
             port = self.port_entry.get().strip()
             if port and not self._port_accessible(port):
@@ -5136,7 +5266,9 @@ class HydraUI(ctk.CTk):
             self._detail(f"the Pico is already in its bootloader: {drive}")
             return drive
         port, sent = self._job.get("port") or "", False
-        if port and os.path.exists(port) or (port and self.is_windows):
+        if self._is_unresponsive(port):
+            self._detail(f"the Pico on {port} doesn't answer: it can't restart itself")
+        elif port and os.path.exists(port) or (port and self.is_windows):
             try:
                 with self._programmer(port) as prog:
                     prog.bootsel()
@@ -5149,6 +5281,7 @@ class HydraUI(ctk.CTk):
                 "Hold the BOOTSEL button on the Pico while you plug it in again…",
                 "warning",
             )
+            self.after(0, self.update_status, "Hold BOOTSEL and plug the Pico in again…")
         deadline = time.monotonic() + (20 if sent else 120)
         while time.monotonic() < deadline:
             if self._abort_requested:
@@ -5511,7 +5644,7 @@ class HydraUI(ctk.CTk):
                 except Exception:
                     pass
         else:
-            self._set_led(LED["IDLE"])
+            self._set_led(LED["IDLE"], wait=True)  # before the process ends
         if self._log_after_id:
             self.after_cancel(self._log_after_id)
         self.save_config()
