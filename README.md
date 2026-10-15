@@ -65,7 +65,9 @@ cd firmware
 ./build.sh flash    # builds, then copies it to a Pico in BOOTSEL mode
 ```
 
-GitHub Actions also builds the `.uf2` on every push that touches `firmware/`.
+GitHub Actions also builds the `.uf2` on every push that touches `firmware/`. Pushing a tag
+`fw-v<version>` (matching `FW_VERSION` in `firmware/main.c`) publishes it as a GitHub Release,
+which the app's settings page can download and install on the Pico.
 
 ## License
 

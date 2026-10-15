@@ -46,6 +46,14 @@ You need the [Pico SDK](https://github.com/raspberrypi/pico-sdk), `cmake` and `g
 
 GitHub Actions builds the firmware on every push that touches `firmware/` (against pico-sdk 1.5.0) and keeps `pico_serprog.uf2` and `.elf` as the `pico_serprog` build artifact.
 
+**Releases.** Bump `FW_VERSION` in `main.c`, commit, then push a matching tag:
+
+```sh
+git tag fw-v1.1 && git push origin fw-v1.1
+```
+
+The workflow checks that the tag matches `FW_VERSION` and publishes a GitHub Release with `hydraflasher-fw-<version>.uf2`. The HydraFlasher app's settings page offers the newest one as "latest", and can also install any `.uf2` file.
+
 ## Using it with flashprog or flashrom
 
 The Pico shows up as a USB serial port (`/dev/ttyACM0` or similar on Linux, a COM port on Windows). Choose the socket with `cs=`:
@@ -65,7 +73,7 @@ flashprog -p serprog:dev=/dev/ttyACM0,spispeed=16M,cs=10 -E            # erase a
 The firmware speaks serprog interface version 1 over SPI and reports its commands through `S_CMD_Q_CMDMAP`.
 
 Supported standard commands:
-- the queries: interface, command map, programmer name (`pico-serprog`), serial buffer size, bus type, read-n and write-n maximum length;
+- the queries: interface, command map, programmer name (`HydraFlasher <version>`, see `FW_VERSION` in `main.c`; `pico-serprog` before version 1.1), serial buffer size, bus type, read-n and write-n maximum length;
 - `SYNCNOP`;
 - set bus type, set pin state, SPI operation, SPI frequency, chip select, SPI mode and CS mode.
 
