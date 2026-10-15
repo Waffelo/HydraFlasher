@@ -32,9 +32,11 @@ jobs:
             firmware/build/pico_serprog.uf2
             firmware/build/pico_serprog.elf
       - name: Check that the tag matches FW_VERSION
+        id: version
         if: startsWith(github.ref, 'refs/tags/fw-v')
         run: |
           version="${GITHUB_REF_NAME#fw-v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           grep -q "#define FW_VERSION  \"$version\"" main.c || {
             echo "Tag $GITHUB_REF_NAME doesn't match FW_VERSION in main.c" >&2; exit 1; }
           cp build/pico_serprog.uf2 "build/hydraflasher-fw-$version.uf2"
@@ -55,7 +57,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/fw-v')
         uses: softprops/action-gh-release@v2
         with:
-          name: Firmware ${{ github.ref_name }}
+          name: Firmware v${{ steps.version.outputs.version }}
           # The changelog section, followed by GitHub's list of merged pull requests
           body_path: firmware/build/release-notes.md
           generate_release_notes: true

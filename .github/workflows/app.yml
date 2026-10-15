@@ -62,8 +62,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check the tag and the changelog
+        id: version
         run: |
           version="${GITHUB_REF_NAME#app-v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           grep -q "^APP_VERSION = \"$version\"" HydraFlasher.py || {
             echo "Tag $GITHUB_REF_NAME doesn't match APP_VERSION in HydraFlasher.py" >&2; exit 1; }
           # The "## <version> · <date>" section, without its heading
@@ -81,7 +83,7 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          name: App ${{ github.ref_name }}
+          name: App v${{ steps.version.outputs.version }}
           body_path: release-notes.md
           generate_release_notes: true
           make_latest: "true"
