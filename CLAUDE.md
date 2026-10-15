@@ -60,6 +60,10 @@ A new command touches three places: `serprog.h`, the hand-built `cmdmap` bitmap 
 
 **Settings page.** The gear in the header (or Ctrl+,) swaps `self._top_view` (sockets, flashing options, buttons) for `self._settings_view`, built on first open; the status line, log and footer stay, so jobs started there log as usual. `_refresh_settings()` fills it in and returns at once while it's closed, so call it wherever shown state changes. Operation shortcuts are ignored while it's open, and Esc goes back when no job runs. Settings apply immediately (no save button). The firmware update (`_start_firmware_update`) is a normal job started with `needs_port=False`: `read_uf2()` checks the file (UF2 blocks, RP2040 family, embedded version) first; then 0x21 (or a prompt to hold BOOTSEL), `find_rp2_drive()` (findmnt plus `udisksctl mount` on Linux, removable drive letters on Windows, `/Volumes` on macOS), the copy, `_wait_for_pico()` and `_read_fw_identity()`, which compares the version. A `.uf2` dropped anywhere goes this way, never to a flash chip.
 
+**Socket names.** `socket_names` (config, by CS number, 16 characters at most) label the cards (name as title, CS number as tag) and every socket mention in the log and in messages: use `_sock(cs)` ("CS1 EC"), `_socks()` for lists and `_sock_col()` for aligned tables (`result_row` and `_slot_rows` take the padded label). Plain `CS<n>` stays where it's data, not text: the CSV flash log's `socket` column, the target menu labels (saved in the config), read file names.
+
+**Live scan and LEDs settings.** `scan_var` turns the every-interval scan off; `_scan_tick` then only asks the firmware once (`_scan_worker(..., chips=False)`), and `_queue_continue` still scans between jobs. Interval and SPI speed come from `scan_interval_var` / `scan_speed_var` (`SCAN_INTERVALS`, `SCAN_SPEEDS`); until the firmware is identified the tick stays at 1 s. With `leds_var` off `_set_led` does nothing; `force=True` switches them off once.
+
 **Partial writes.** The image is split into 64 KiB erase blocks (`block_ranges`). Blocks the image doesn't use are blank-checked on the Pico through CRC32. Only the used blocks plus any non-blank unused blocks get erased and written, via flashprog layout args. The GUI skips this and does a full write once more than 90% of the blocks are in use (`PARTIAL_MAX_USED`).
 
 **Threading.** Tk runs on the main thread. Jobs run in a worker thread started by `_start_job`, which snapshots all Tk variables into `self._job` first so the worker never touches Tk. Workers return `(ok, msg)` and update the UI only through `self.after(0, ...)`. Raise `JobAborted` or `ProgrammerError` to stop a job early.
@@ -85,7 +89,7 @@ A new command touches three places: `serprog.h`, the hand-built `cmdmap` bitmap 
 **sudo.** On Linux, if the user can't open the port, flashprog runs under `sudo -S` with the password piped in through stdin. On-Pico features are then disabled, because the direct port isn't accessible.
 
 **Persisted state:**
-- Config: `~/.config/hydra_flasher.json` (Windows: `~/.hydra_flasher.json`), including `jedec_cache`, `job_times`, `sockets` and `notifications`
+- Config: `~/.config/hydra_flasher.json` (Windows: `~/.hydra_flasher.json`), including `jedec_cache`, `job_times`, `sockets`, `socket_names`, `live_scan`, `scan_interval`, `scan_speed`, `leds` and `notifications`
 - Downloaded firmware releases: `<data dir>/firmware/`
 - CSV flash log: `~/.local/share/hydra-flasher/flash_log.csv` (Windows: `%APPDATA%\HydraFlasher`)
 
