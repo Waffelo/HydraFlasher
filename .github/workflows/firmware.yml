@@ -38,9 +38,25 @@ jobs:
           grep -q "#define FW_VERSION  \"$version\"" main.c || {
             echo "Tag $GITHUB_REF_NAME doesn't match FW_VERSION in main.c" >&2; exit 1; }
           cp build/pico_serprog.uf2 "build/hydraflasher-fw-$version.uf2"
+      - name: Release notes from CHANGELOG.md
+        if: startsWith(github.ref, 'refs/tags/fw-v')
+        run: |
+          # The "## <version> · <date>" section, without its heading, up to the next "## "
+          version="${GITHUB_REF_NAME#fw-v}"
+          awk -v v="$version" '
+            /^## / { inside = ($2 == v) ; next }
+            inside { print }
+          ' CHANGELOG.md > build/release-notes.md
+          grep -q '[^[:space:]]' build/release-notes.md || {
+            echo "No '## $version' section in firmware/CHANGELOG.md: write the notes first" >&2
+            exit 1; }
+          cat build/release-notes.md
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/fw-v')
         uses: softprops/action-gh-release@v2
         with:
           name: Firmware ${{ github.ref_name }}
+          # The changelog section, followed by GitHub's list of merged pull requests
+          body_path: firmware/build/release-notes.md
+          generate_release_notes: true
           files: firmware/build/hydraflasher-fw-*.uf2
