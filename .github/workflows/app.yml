@@ -1,0 +1,88 @@
+name: app
+# Builds the app packages (Windows installer + portable .exe, Linux AppImage) on every
+# change to the app, and starts each one in --self-test mode. A tag app-v<version>
+# (matching APP_VERSION in HydraFlasher.py) also publishes them as a GitHub Release,
+# with that version's section of CHANGELOG.md as the notes.
+on:
+  push:
+    branches: ["**"]
+    tags: ["app-v*"]
+    paths:
+      - HydraFlasher.py
+      - requirements.txt
+      - logo-mark.png
+      - CHANGELOG.md
+      - packaging/**
+      - .github/workflows/app.yml
+  pull_request:
+    paths:
+      - HydraFlasher.py
+      - requirements.txt
+      - logo-mark.png
+      - CHANGELOG.md
+      - packaging/**
+      - .github/workflows/app.yml
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r packaging/requirements-build.txt
+      - run: choco install innosetup --no-progress -y
+      - run: python packaging/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: release/*
+
+  linux:
+    # The oldest runner: an AppImage runs on systems at least as new as its build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y python3-venv python3-tk xvfb
+      - run: python3 -m venv venv && venv/bin/pip install -r packaging/requirements-build.txt
+      - run: xvfb-run -a venv/bin/python packaging/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: release/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/app-v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag and the changelog
+        run: |
+          version="${GITHUB_REF_NAME#app-v}"
+          grep -q "^APP_VERSION = \"$version\"" HydraFlasher.py || {
+            echo "Tag $GITHUB_REF_NAME doesn't match APP_VERSION in HydraFlasher.py" >&2; exit 1; }
+          # The "## <version> · <date>" section, without its heading
+          awk -v v="$version" '
+            /^## / { inside = ($2 == v) ; next }
+            inside { print }
+          ' CHANGELOG.md > release-notes.md
+          grep -q '[^[:space:]]' release-notes.md || {
+            echo "No '## $version' section in CHANGELOG.md: write the notes first" >&2
+            exit 1; }
+          cat release-notes.md
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: App ${{ github.ref_name }}
+          body_path: release-notes.md
+          generate_release_notes: true
+          make_latest: "true"
+          files: release/*

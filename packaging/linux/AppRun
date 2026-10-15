@@ -1,0 +1,4 @@
+#!/bin/sh
+# AppImage entry point: start the frozen app (PyInstaller folder build)
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/lib/hydraflasher/HydraFlasher" "$@"
