@@ -13,7 +13,7 @@ HydraFlasher: a customtkinter desktop GUI (`HydraFlasher.py`, single file) that 
 ## Commands
 
 ```sh
-pip install -r requirements.txt     # customtkinter, pyserial, optional plyer
+pip install -r requirements.txt     # customtkinter, pyserial, optional plyer and tkinterdnd2
 python3 HydraFlasher.py             # Python 3.8+ with Tk; needs flashprog or flashrom on PATH
 
 cd firmware && ./build.sh           # -> firmware/build/pico_serprog.uf2 (needs PICO_SDK_PATH or pico-sdk/ in/next to firmware/)
@@ -21,13 +21,14 @@ cd firmware && ./build.sh flash     # build + copy to a Pico in BOOTSEL; reboots
 ```
 
 ```sh
-tests/run_all.sh                    # GUI tests with a fake Pico and fake flashprog (needs a display)
+tests/run_all.sh                    # GUI tests with a fake Pico and fake flashprog, on a hidden display
+VISIBLE=1 tests/run_all.sh          # same, but the windows open on your desktop
 tests/run_all.sh run_onebyone.py    # a single test
 python3 tools/run_readme_shot.py . screenshot.png   # regenerate the README screenshot
 python3 tools/draw_pinout.py firmware/pinout.png    # regenerate the pinout drawing
 ```
 
-Each test (`tests/run_*.py`) starts the real GUI, swaps `Programmer` for a fake with scripted IDs and flashprog for a `tests/fakeflash*.py` script that logs its command lines, then prints `PASS`/`FAIL` lines. A test must point `CONFIG_FILE`, `DATA_DIR` and `FLASH_LOG` at its own folder, and seed `jedec_cache` for any chip it doesn't want auto-identified (otherwise the scan starts an extra probe job). Run tests after behaviour changes, and add one for new features. There are no linters. CI (`.github/workflows/firmware.yml`) only builds the firmware, against pico-sdk 1.5.0.
+Each test (`tests/run_*.py`) starts the real GUI, swaps `Programmer` for a fake with scripted IDs and flashprog for a `tests/fakeflash*.py` script that logs its command lines, then prints `PASS`/`FAIL` lines. A test must point `CONFIG_FILE`, `DATA_DIR` and `FLASH_LOG` at its own folder, and seed `jedec_cache` for any chip it doesn't want auto-identified (otherwise the scan starts an extra probe job). `run_all.sh` re-runs itself on a hidden display (`xvfb-run`, else a headless `kwin_wayland --virtual --xwayland`), because test windows would take the user's focus; ad-hoc GUI scripts and screenshots must be wrapped the same way. It copies `tests/*.py` into a fresh temp dir per test (120 s timeout) and passes the repo path as the first argument; a test with zero `PASS` lines counts as failed. For a new test, copy the closest existing one: fakes, then steps chained with `app.after`, then `app.destroy()`. A few tests take screenshots with ImageMagick's `import`; those checks are skipped without it. Run tests after behaviour changes, and add one for new features. There are no linters. CI (`.github/workflows/firmware.yml`) only builds the firmware, against pico-sdk 1.5.0.
 
 ## Architecture
 
@@ -39,22 +40,27 @@ Both paths hold `self._port_lock`, so only one of them has the port open at any 
 
 The port is auto-selected by `_score_port`, which prefers the HydraFlasher USB VID `0xCAFE` over the stock Pico VID `0x2E8A`, plus descriptor keywords.
 
-**Chip-select numbering.** The firmware has 6 CS pins (CS0 to CS5, on GP5 to GP10; `NUM_CS_PINS`/`CS_BROADCAST` in `firmware/main.c`). The full pinout is in `README.md`. `CS_ALL = 6` is a broadcast that pulls every CS line low at once. The GUI shows `NUM_SLOTS = 4` sockets.
+**Chip-select numbering.** The firmware has 10 CS pins (CS0 to CS9 on GP5 to GP14, LEDs on GP16 to GP18; `NUM_CS_PINS` in `firmware/main.c`), and the broadcast that pulls every CS line low at once is the index after the last pin (`CS_BROADCAST = NUM_CS_PINS` = 10). Older firmware had 6 pins with the broadcast on 6, and no `0x23`. The full pinout is in `README.md`; `tools/draw_pinout.py` draws `firmware/pinout.png`. Inside the GUI the broadcast is always `CS_ALL = MAX_SLOTS` (10), above every socket number, so `cs < self.num_slots` means "a single socket". Only `_build_command` turns it into the firmware's index: `job["broadcast"]`, from `self._fw_cs`, which the first scan after connecting asks for (`0x23`; `LEGACY_CS_PINS` = 6 without it; unknown, e.g. under sudo, assumes the current firmware). Sockets at or above `_fw_cs` are never scanned or probed (`job["usable"]`; on old firmware `cs=6` *is* the broadcast), their cards say so, and `_start_job` refuses them. The GUI shows `self.num_slots` sockets: `"sockets"` in the config, 1 to `MAX_SLOTS` (10), default `DEFAULT_SLOTS` (4), changed live from the settings page (`_set_socket_count`: rebuilds the socket row in `_sockets_box`, `_build_cs_map`, `_bind_socket_keys`, resizes the per-socket lists; only while idle); socket 10 is Alt+0. With one socket `has_all` is false: no ALL card, target or Alt+A, so `self.cards` has no `CS_ALL` key.
 
-**Broadcast gotcha.** During a CS6 broadcast every chip drives MISO at the same time, so reads over the shared bus are garbage. "All" operations (`_start_write_all` and friends) therefore:
-1. erase and write over CS6, erasing first so all chips hold identical contents, because flashprog reads before it writes;
-2. verify each socket individually, never over CS6.
+**Broadcast gotcha.** During a broadcast every chip drives MISO at the same time, so reads over the shared bus are garbage. "All" operations (`_start_write_all` and friends) therefore:
+1. erase and write over the broadcast, erasing first so all chips hold identical contents, because flashprog reads before it writes;
+2. verify each socket individually, never over the broadcast.
 
 All chips must be the same type (`_require_same_type`).
 
 **Custom serprog commands** are defined in `firmware/serprog.h`:
 - `0x20` SET_LED (mirrored as `S_CMD_SET_LED` in `HydraFlasher.py`)
-- `0x21` BOOTSEL (no GUI constant; only `firmware/build.sh flash` sends it)
+- `0x21` BOOTSEL (mirrored as `S_CMD_BOOTSEL`; the firmware update and `firmware/build.sh flash` send it)
 - `0x22` CRC32 (mirrored as `S_CMD_CRC32`)
+- `0x23` Q_NUM_CS, the number of CS lines = the broadcast index (mirrored as `S_CMD_Q_NUM_CS`)
 
 A new command touches three places: `serprog.h`, the hand-built `cmdmap` bitmap in `firmware/main.c` (commands ≥ 32 go in the second word), and the GUI constant. If it's missing from `cmdmap`, the GUI never sees it. The GUI detects whether the firmware supports them through `S_CMD_Q_CMDMAP` (`self._fw_caps`). The fast "on Pico" verify and the partial-write/blank-check path need CRC32 support and direct (non-sudo) port access (`_can_use_pico`). Without either, they fall back to plain flashprog.
 
-**Partial writes.** The image is split into 64 KiB erase blocks (`block_ranges`). Blocks the image doesn't use are blank-checked on the Pico through CRC32. Only the used blocks plus any non-blank unused blocks get erased and written, via flashprog layout args. The GUI skips this and does a full write once more than 90% of the blocks are in use.
+**Firmware version.** `FW_VERSION` in `firmware/main.c` is reported through the standard `S_CMD_Q_PGMNAME` as `"HydraFlasher <version>"` (16 bytes at most); older firmware answers `pico-serprog`. The scan stores it as `self._fw_name` (`fw_version()` parses it). Pushing a tag `fw-v<version>` makes CI (`.github/workflows/firmware.yml`) check it against `FW_VERSION` and publish a GitHub Release with `hydraflasher-fw-<version>.uf2`; `latest_fw_release()` finds the newest one.
+
+**Settings page.** The gear in the header (or Ctrl+,) swaps `self._top_view` (sockets, flashing options, buttons) for `self._settings_view`, built on first open; the status line, log and footer stay, so jobs started there log as usual. `_refresh_settings()` fills it in and returns at once while it's closed, so call it wherever shown state changes. Operation shortcuts are ignored while it's open, and Esc goes back when no job runs. Settings apply immediately (no save button). The firmware update (`_start_firmware_update`) is a normal job started with `needs_port=False`: `read_uf2()` checks the file (UF2 blocks, RP2040 family, embedded version) first; then 0x21 (or a prompt to hold BOOTSEL), `find_rp2_drive()` (findmnt plus `udisksctl mount` on Linux, removable drive letters on Windows, `/Volumes` on macOS), the copy, `_wait_for_pico()` and `_read_fw_identity()`, which compares the version. A `.uf2` dropped anywhere goes this way, never to a flash chip.
+
+**Partial writes.** The image is split into 64 KiB erase blocks (`block_ranges`). Blocks the image doesn't use are blank-checked on the Pico through CRC32. Only the used blocks plus any non-blank unused blocks get erased and written, via flashprog layout args. The GUI skips this and does a full write once more than 90% of the blocks are in use (`PARTIAL_MAX_USED`).
 
 **Threading.** Tk runs on the main thread. Jobs run in a worker thread started by `_start_job`, which snapshots all Tk variables into `self._job` first so the worker never touches Tk. Workers return `(ok, msg)` and update the UI only through `self.after(0, ...)`. Raise `JobAborted` or `ProgrammerError` to stop a job early.
 
@@ -62,7 +68,11 @@ A new command touches three places: `serprog.h`, the hand-built `cmdmap` bitmap 
 
 **One-by-one.** The `one_by_one_var` toggle is only shown while ALL is the target. With it on, write and erase on ALL don't broadcast; erase queues one `_start_erase` per socket. Normally it queues one `_start_write` per usable socket; a production batch instead runs one `_start_write_each` job, which loops over the sockets with the shared `_write_socket`. The chips may then differ: each socket is checked against the image on its own. `_one_by_one()` and `_target_label()` are the helpers to use.
 
-**Chip definition per job.** `_start_job` stores `_pick_chip_definition(cs)` in the job, not the global override. It returns the override if it fits that socket's chip, else a definition picked earlier for that JEDEC ID (`_chip_choice`), else auto-detect if only one definition matches, else it asks. That way a queue of mixed chip types never sends one chip's `-c` to another. Within a job, `_build_command` asks `_socket_chip(cs)` for each socket, because jobs over several sockets (probe/read/verify all, `_start_write_each`) meet chips the job's definition doesn't fit, and flashprog with a wrong `-c` reports no chip at all. Only runs that actually auto-detected (`_chip_used`) teach the JEDEC cache. When the live scan sees a chip that isn't in `jedec_cache` yet, it resets any chip override and starts `_start_identify`, a probe without `-c` that goes ahead of queued jobs. A job whose `key` (default: its title; file operations include the full path) matches the running or a queued job is refused as a duplicate. Operations listed in `QUEUE_BLOCKED` (currently probe) are refused while a job runs or waits. Their buttons are greyed but stay clickable, so a click can log the reason. To block another operation, add it to `QUEUE_BLOCKED` and call `_queue_blocked("<name>")` at the top of its entry point. `_refresh_op_buttons` decides which buttons are greyed, for any reason. Besides the queue rules, write and erase are greyed while the target is ALL and `_broadcast_write_error()` returns a reason (chip types differ, unsupported chip, no chips). With one-by-one, only "no chips" counts. It runs from `_refresh_sockets`, `_refresh_selection` and on every busy change.
+**Chip definition per job.** `_start_job` stores `_pick_chip_definition(cs)` in the job, not the global override. It returns the override if it fits that socket's chip, else a definition picked earlier for that JEDEC ID (`_chip_choice`), else auto-detect if only one definition matches, else it asks. That way a queue of mixed chip types never sends one chip's `-c` to another. Within a job, `_build_command` asks `_socket_chip(cs)` for each socket, because jobs over several sockets (probe/read/verify all, `_start_write_each`) meet chips the job's definition doesn't fit, and flashprog with a wrong `-c` reports no chip at all. Only runs that actually auto-detected (`_chip_used`) teach the JEDEC cache. When the live scan sees a chip that isn't in `jedec_cache` yet, it resets any chip override and starts `_start_identify`, a probe without `-c` that goes ahead of queued jobs. A job whose `key` (default: its title; file operations include the full path) matches the running or a queued job is refused as a duplicate. Operations listed in `QUEUE_BLOCKED` (currently probe and the firmware update) are refused while a job runs or waits. Their buttons are greyed but stay clickable, so a click can log the reason. To block another operation, add it to `QUEUE_BLOCKED` and call `_queue_blocked("<name>")` at the top of its entry point. `_refresh_op_buttons` decides which buttons are greyed, for any reason. Besides the queue rules, write and erase are greyed while the target is ALL and `_broadcast_write_error()` returns a reason (chip types differ, unsupported chip, no chips). With one-by-one, only "no chips" counts. It runs from `_refresh_sockets`, `_refresh_selection` and on every busy change.
+
+**Time estimates.** After each successful job, `_learn_time` averages its duration into `job_times` (persisted in the config) under the signatures from `_eta_keys`: operation, sockets, chip, image or chip size, SPI speed and the pico/partial/no-verify flags, plus a more specific key that also names the image file. `_launch` looks one up (`_estimate`) and `_tick` shows `~… left` and the queue total. Probes and identify jobs aren't estimated.
+
+**Drag and drop.** Optional, through `tkinterdnd2` (`DND_AVAILABLE`, `_load_dnd`). `_register_drop_targets` registers the socket cards (write to that socket), the log panel (verify the selected target) and the UI root (a hint only); tkdnd picks the nearest registered parent of the widget under the pointer. `_handle_drop` then goes through the same `_write_allowed` / `_write_file` / `_verify_file` path as the buttons, after the tkdnd callback has returned, so the confirmation dialog doesn't block the file manager's drag.
 
 **Chip identity.** `jedec_cache` (persisted in the config) maps a scanned JEDEC ID to flashprog's definition names. It only learns from probes run without `-c`, because a forced definition hides the other matches. It never learns flashprog's catch-all "unknown … SPI chip" definitions (`is_generic_chip`); those chips show as "unsupported" and are refused. A manufacturer byte of `00`/`FF` counts as an empty socket or a garbled read. The chip override is reset to Auto-detect when the scan sees a chip it doesn't fit.
 
@@ -75,7 +85,8 @@ A new command touches three places: `serprog.h`, the hand-built `cmdmap` bitmap 
 **sudo.** On Linux, if the user can't open the port, flashprog runs under `sudo -S` with the password piped in through stdin. On-Pico features are then disabled, because the direct port isn't accessible.
 
 **Persisted state:**
-- Config: `~/.config/hydra_flasher.json` (Windows: `~/.hydra_flasher.json`)
+- Config: `~/.config/hydra_flasher.json` (Windows: `~/.hydra_flasher.json`), including `jedec_cache`, `job_times`, `sockets` and `notifications`
+- Downloaded firmware releases: `<data dir>/firmware/`
 - CSV flash log: `~/.local/share/hydra-flasher/flash_log.csv` (Windows: `%APPDATA%\HydraFlasher`)
 
 **Firmware TinyUSB patch.** `firmware/tinyusb_patched/cdc_device.c` is a copy of TinyUSB 0.18.0's CDC driver with one change: a separate IN buffer size. `CMakeLists.txt` filters the SDK's copy out of `tinyusb_device_base` and compiles this one instead.

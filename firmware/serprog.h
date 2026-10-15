@@ -34,5 +34,6 @@
 #define S_CMD_SET_LED		0x20	/* Custom: set LED state (0=off,1=orange,2=green,3=red) */
 #define S_CMD_BOOTSEL		0x21	/* Custom: reboot into the USB bootloader (RPI-RP2 drive) */
 #define S_CMD_CRC32		0x22	/* Custom: CRC32 of a flash range on one socket		*/
+#define S_CMD_Q_NUM_CS		0x23	/* Custom: number of CS pins (= broadcast index)	*/
 
 #endif

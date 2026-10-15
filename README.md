@@ -53,8 +53,8 @@ Pinout:
 | SCK | GP2 |
 | MOSI | GP3 |
 | MISO | GP4 (pull-up) |
-| CS0 to CS5 | GP5 to GP10 |
-| LED busy / pass / fail | GP11 / GP12 / GP13 |
+| CS0 to CS9 | GP5 to GP14 |
+| LED busy / pass / fail | GP16 / GP17 / GP18 |
 
 Build with the Pico SDK (`PICO_SDK_PATH` set, or a `pico-sdk` checkout in or
 next to `firmware/`):
@@ -65,7 +65,9 @@ cd firmware
 ./build.sh flash    # builds, then copies it to a Pico in BOOTSEL mode
 ```
 
-GitHub Actions also builds the `.uf2` on every push that touches `firmware/`.
+GitHub Actions also builds the `.uf2` on every push that touches `firmware/`. Pushing a tag
+`fw-v<version>` (matching `FW_VERSION` in `firmware/main.c`) publishes it as a GitHub Release,
+which the app's settings page can download and install on the Pico.
 
 ## License
 
