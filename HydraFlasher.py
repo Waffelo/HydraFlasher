@@ -5053,6 +5053,9 @@ class HydraUI(ctk.CTk):
             "Update firmware", message, yes="Install", no="Cancel", danger=version is None
         ):
             return False
+        # Its steps, and a "hold BOOTSEL" request if the Pico can't restart itself,
+        # show in the log, which the settings page hides
+        self._close_settings()
         return self._start_job(
             "Updating firmware…",
             lambda: self._firmware_worker(path, release, version),

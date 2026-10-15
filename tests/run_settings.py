@@ -256,6 +256,9 @@ def s3():
     app._start_firmware_update(path=good)
     check("asks before installing", asks and "Install firmware 1.2" in asks[-1][1]
           and "HydraFlasher 1.1" in asks[-1][1])
+    app.update()
+    check("installing goes back to the main view (log visible)",
+          not app._settings_open and app._log_panel.winfo_ismapped())
     wait_idle(s4)
 
 
@@ -264,6 +267,7 @@ def s4():
     check("file copied to the drive", os.path.isfile(os.path.join(drive, "hydraflasher.uf2")))
     check("update succeeded", results and results[-1][0]
           and "Firmware 1.2 installed · 10 CS lines" in results[-1][1])
+    app._open_settings()
     check("page shows the new version",
           app._settings_widgets["fw_pico"].cget("text").startswith("HydraFlasher 1.2"))
     t = log_text()
