@@ -21,13 +21,14 @@ cd firmware && ./build.sh flash     # build + copy to a Pico in BOOTSEL; reboots
 ```
 
 ```sh
-tests/run_all.sh                    # GUI tests with a fake Pico and fake flashprog (needs a display)
+tests/run_all.sh                    # GUI tests with a fake Pico and fake flashprog, on a hidden display
+VISIBLE=1 tests/run_all.sh          # same, but the windows open on your desktop
 tests/run_all.sh run_onebyone.py    # a single test
 python3 tools/run_readme_shot.py . screenshot.png   # regenerate the README screenshot
 python3 tools/draw_pinout.py firmware/pinout.png    # regenerate the pinout drawing
 ```
 
-Each test (`tests/run_*.py`) starts the real GUI, swaps `Programmer` for a fake with scripted IDs and flashprog for a `tests/fakeflash*.py` script that logs its command lines, then prints `PASS`/`FAIL` lines. A test must point `CONFIG_FILE`, `DATA_DIR` and `FLASH_LOG` at its own folder, and seed `jedec_cache` for any chip it doesn't want auto-identified (otherwise the scan starts an extra probe job). `run_all.sh` copies `tests/*.py` into a fresh temp dir per test (120 s timeout) and passes the repo path as the first argument; a test with zero `PASS` lines counts as failed. For a new test, copy the closest existing one: fakes, then steps chained with `app.after`, then `app.destroy()`. A few tests take screenshots with ImageMagick's `import`; those checks are skipped without it. Run tests after behaviour changes, and add one for new features. There are no linters. CI (`.github/workflows/firmware.yml`) only builds the firmware, against pico-sdk 1.5.0.
+Each test (`tests/run_*.py`) starts the real GUI, swaps `Programmer` for a fake with scripted IDs and flashprog for a `tests/fakeflash*.py` script that logs its command lines, then prints `PASS`/`FAIL` lines. A test must point `CONFIG_FILE`, `DATA_DIR` and `FLASH_LOG` at its own folder, and seed `jedec_cache` for any chip it doesn't want auto-identified (otherwise the scan starts an extra probe job). `run_all.sh` re-runs itself on a hidden display (`xvfb-run`, else a headless `kwin_wayland --virtual --xwayland`), because test windows would take the user's focus; ad-hoc GUI scripts and screenshots must be wrapped the same way. It copies `tests/*.py` into a fresh temp dir per test (120 s timeout) and passes the repo path as the first argument; a test with zero `PASS` lines counts as failed. For a new test, copy the closest existing one: fakes, then steps chained with `app.after`, then `app.destroy()`. A few tests take screenshots with ImageMagick's `import`; those checks are skipped without it. Run tests after behaviour changes, and add one for new features. There are no linters. CI (`.github/workflows/firmware.yml`) only builds the firmware, against pico-sdk 1.5.0.
 
 ## Architecture
 
@@ -39,7 +40,7 @@ Both paths hold `self._port_lock`, so only one of them has the port open at any 
 
 The port is auto-selected by `_score_port`, which prefers the HydraFlasher USB VID `0xCAFE` over the stock Pico VID `0x2E8A`, plus descriptor keywords.
 
-**Chip-select numbering.** The firmware has 6 CS pins (CS0 to CS5, on GP5 to GP10; `NUM_CS_PINS`/`CS_BROADCAST` in `firmware/main.c`). The full pinout is in `README.md`. `CS_ALL = 6` is a broadcast that pulls every CS line low at once. The GUI shows `NUM_SLOTS = 4` sockets.
+**Chip-select numbering.** The firmware has 6 CS pins (CS0 to CS5, on GP5 to GP10; `NUM_CS_PINS`/`CS_BROADCAST` in `firmware/main.c`). The full pinout is in `README.md`. `CS_ALL = 6` is a broadcast that pulls every CS line low at once. The GUI shows `self.num_slots` sockets: `"sockets"` in the config, 1 to `MAX_SLOTS` (6), default `DEFAULT_SLOTS` (4), read once at start because the cards are built then. Since `CS_ALL` is above every socket number, `cs < self.num_slots` means "a single socket". With one socket `has_all` is false: no ALL card, target or Alt+A, so `self.cards` has no `CS_ALL` key.
 
 **Broadcast gotcha.** During a CS6 broadcast every chip drives MISO at the same time, so reads over the shared bus are garbage. "All" operations (`_start_write_all` and friends) therefore:
 1. erase and write over CS6, erasing first so all chips hold identical contents, because flashprog reads before it writes;

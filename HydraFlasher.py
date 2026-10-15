@@ -80,7 +80,10 @@ S_CMD_S_SPI_CS = 0x16
 S_CMD_SET_LED = 0x20
 S_CMD_CRC32 = 0x22
 
-NUM_SLOTS = 4
+DEFAULT_SLOTS = 4
+# The firmware has 6 chip selects (CS0-CS5); CS_ALL (6) is the broadcast, so every
+# socket number stays below it and "cs < self.num_slots" means a single socket
+MAX_SLOTS = 6
 CS_ALL = 6
 CS_ALL_LABEL = "All chips (CS6)"
 SPI_SPEEDS = ["4M", "8M", "12M", "16M", "20M", "24M", "30M", "36M", "40M", "48M"]
@@ -684,8 +687,25 @@ class HydraUI(ctk.CTk):
         self._eta: Optional[float] = None  # estimate for the running job
         self._entry: dict = {}  # queue entry of the running job
 
-        self.cs_map = {f"{i + 1} (CS{i})": i for i in range(NUM_SLOTS)}
-        self.cs_map[CS_ALL_LABEL] = CS_ALL
+        # Number of sockets on the board ("sockets" in the config, read at start only:
+        # the cards are built once). Written back so the key shows up in the file.
+        sockets = self.cfg.get("sockets", DEFAULT_SLOTS)
+        self._sockets_warning = ""
+        if isinstance(sockets, bool) or not isinstance(sockets, int) or not (
+            1 <= sockets <= MAX_SLOTS
+        ):
+            self._sockets_warning = (
+                f'Config "sockets": {json.dumps(sockets)} is not a number from 1 to '
+                f"{MAX_SLOTS} – using {DEFAULT_SLOTS}."
+            )
+            sockets = DEFAULT_SLOTS
+        self.num_slots: int = sockets
+        # One socket: no ALL card/target, a broadcast would only reach that chip anyway
+        self.has_all = sockets > 1
+
+        self.cs_map = {f"{i + 1} (CS{i})": i for i in range(self.num_slots)}
+        if self.has_all:
+            self.cs_map[CS_ALL_LABEL] = CS_ALL
         self.cs_labels = {v: k for k, v in self.cs_map.items()}
 
         cs_display = self.cfg.get("cs", "1 (CS0)")
@@ -694,13 +714,13 @@ class HydraUI(ctk.CTk):
         self.sudo_password: Optional[str] = None
         self.available_chips = ["Auto-detect"]
         # Per socket (index = CS number)
-        self.slots: List[Optional[dict]] = [None] * NUM_SLOTS
+        self.slots: List[Optional[dict]] = [None] * self.num_slots
         self._socket_result: List[Optional[str]] = [
             None
-        ] * NUM_SLOTS  # "pass" / "fail" / None
+        ] * self.num_slots  # "pass" / "fail" / None
         self._socket_ident: List[tuple] = [
             _UNSCANNED
-        ] * NUM_SLOTS  # (jedec, uid) from live scan
+        ] * self.num_slots  # (jedec, uid) from live scan
         self._busy_sockets: set = set()
 
         # Live scan / direct programmer access
@@ -764,6 +784,8 @@ class HydraUI(ctk.CTk):
         self._register_drop_targets()
 
         self._print_welcome_message()
+        if self._sockets_warning:
+            self.log_note(self._sockets_warning, "warning")
         self._auto_select_port(prefer=self.cfg.get("port", ""))
         self._set_led(LED["IDLE"])
         self.save_config()
@@ -782,9 +804,10 @@ class HydraUI(ctk.CTk):
         }
         for key, fn in shortcuts.items():
             self.bind(key, lambda e, fn=fn: self._shortcut(fn))
-        for i in range(NUM_SLOTS):
+        for i in range(self.num_slots):
             self.bind(f"<Alt-Key-{i + 1}>", lambda e, cs=i: self._select_target(cs))
-        self.bind("<Alt-Key-a>", lambda e: self._select_target(CS_ALL))
+        if self.has_all:
+            self.bind("<Alt-Key-a>", lambda e: self._select_target(CS_ALL))
         self.bind("<Control-l>", lambda e: self._clear_log())
         self.bind("<Control-q>", lambda e: self._on_closing())
         self.bind("<Escape>", lambda e: self.stop())
@@ -821,6 +844,7 @@ class HydraUI(ctk.CTk):
                 "recent_files": self.recent_files,
                 "jedec_cache": self.jedec_cache,
                 "job_times": self.job_times,
+                "sockets": self.num_slots,
             }
         )
         try:
@@ -1002,7 +1026,7 @@ class HydraUI(ctk.CTk):
         ).pack(side="left")
         ctk.CTkLabel(
             head,
-            text="  4× SOIC-16 · serprog",
+            text=f"  {self.num_slots}× SOIC-16 · serprog",
             font=self.fonts["normal"],
             text_color=T["dim"],
         ).pack(side="left", pady=(3, 0))
@@ -1042,14 +1066,17 @@ class HydraUI(ctk.CTk):
 
     def _create_sockets(self, parent):
         drop = " · drop an image to write" if self._dnd else ""
+        keys = "alt+1" if self.num_slots == 1 else f"alt+1…{self.num_slots}"
         self._section(
             parent,
-            f"sockets  · live · click to select target{drop}  (alt+1…4, alt+a)",
+            f"sockets  · live · click to select target{drop}  "
+            f"({keys}{', alt+a' if self.has_all else ''})",
         )
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x")
         self.cards = {}
-        for i, cs in enumerate(list(range(NUM_SLOTS)) + [CS_ALL]):
+        all_card = [CS_ALL] if self.has_all else []
+        for i, cs in enumerate(list(range(self.num_slots)) + all_card):
             if cs == CS_ALL:
                 card = SocketCard(
                     row, "ALL", "CS6", self.fonts, lambda: self._select_target(CS_ALL)
@@ -1427,7 +1454,7 @@ class HydraUI(ctk.CTk):
         for i, entry in enumerate(self._queue):
             if entry["cs"] is not None:
                 queued.setdefault(entry["cs"], i + 1)
-        for cs in range(NUM_SLOTS):
+        for cs in range(self.num_slots):
             slot, res, card = self.slots[cs], self._socket_result[cs], self.cards[cs]
             name = slot["name"] if slot and slot["detected"] else "…"
             broadcast_busy = (
@@ -1471,7 +1498,11 @@ class HydraUI(ctk.CTk):
                 else:
                     card.set_state("ok", slot["name"], size)
 
-        all_card = self.cards[CS_ALL]
+        if self.has_all:
+            self._refresh_all_card(self.cards[CS_ALL], queued)
+        self._refresh_op_buttons()  # write is greyed while ALL can't be broadcast to
+
+    def _refresh_all_card(self, all_card: "SocketCard", queued: Dict[int, int]):
         detected = self._detected_slots()
         usable = [d for d in detected if not d.get("unsupported")]
         mode = "one-by-one" if self.one_by_one_var.get() else "broadcast"
@@ -1500,16 +1531,15 @@ class HydraUI(ctk.CTk):
                 "broadcast",
                 f"{len(detected)} identical chip{'s' * (len(detected) > 1)}",
             )
-        self._refresh_op_buttons()  # write is greyed while ALL can't be broadcast to
 
     def _mark_busy(self, cs: int, busy: bool):
         (self._busy_sockets.add if busy else self._busy_sockets.discard)(cs)
         self._refresh_sockets()
 
     def _reset_sockets(self):
-        self.slots = [None] * NUM_SLOTS
-        self._socket_result = [None] * NUM_SLOTS
-        self._socket_ident = [_UNSCANNED] * NUM_SLOTS
+        self.slots = [None] * self.num_slots
+        self._socket_result = [None] * self.num_slots
+        self._socket_ident = [_UNSCANNED] * self.num_slots
         self._fw_caps = None
         self._refresh_sockets()
 
@@ -1580,7 +1610,7 @@ class HydraUI(ctk.CTk):
                     if self._fw_caps is None:
                         self._fw_caps = prog.command_map()
                     prog.set_speed(SCAN_SPEED_HZ)
-                    results = [prog.identify(cs) for cs in range(NUM_SLOTS)]
+                    results = [prog.identify(cs) for cs in range(self.num_slots)]
                     prog.pins(False)
                 finally:
                     prog.close()
@@ -2315,7 +2345,7 @@ class HydraUI(ctk.CTk):
         # Queued for a chip inserted mid-job (definitions unknown back then): reuse the
         # chip picked since, if it fits the chip the between-jobs scan found
         cs, override = entry["cs"], self.chip_override.get()
-        slot = self.slots[cs] if cs is not None and cs < NUM_SLOTS else None
+        slot = self.slots[cs] if cs is not None and cs < self.num_slots else None
         if (
             self._job["chip"] == "Auto-detect"
             and override != "Auto-detect"
@@ -2464,7 +2494,7 @@ class HydraUI(ctk.CTk):
         cs, key, job = entry.get("cs"), entry.get("key", ()), entry.get("job", {})
         if op not in ETA_OPS or cs is None:
             return []
-        if cs < NUM_SLOTS:
+        if cs < self.num_slots:
             slots, mode = [self.slots[cs]], "1"
         else:
             slots = self._detected_slots()
@@ -2513,7 +2543,7 @@ class HydraUI(ctk.CTk):
         this chip, else the one picked for this chip type, else auto-detect. A probe
         (identify) of a chip whose definitions aren't known yet always auto-detects."""
         chip = self._job["chip"]
-        if chip == "Auto-detect" or cs >= NUM_SLOTS:
+        if chip == "Auto-detect" or cs >= self.num_slots:
             return chip  # broadcast: one chip type by definition
         slot = self.slots[cs]
         chips = slot["chips"] if slot and slot.get("detected") else []
@@ -2612,7 +2642,7 @@ class HydraUI(ctk.CTk):
         ):
             self.sudo_password = None
         # Keep per-socket info fresh: every run on a single socket re-probes the chip
-        if cs < NUM_SLOTS:
+        if cs < self.num_slots:
             info = self._parse_probe(text, cs)
             if info["detected"]:
                 self._store_slot(cs, info)
@@ -2624,7 +2654,7 @@ class HydraUI(ctk.CTk):
     def _record_result(self, extra: List[str], cs: int, rc: int, noverify: bool):
         """Remember per-socket pass/fail for the status lights."""
         op = extra[0] if extra else "probe"
-        targets = [cs] if cs < NUM_SLOTS else [d["cs"] for d in self._detected_slots()]
+        targets = [cs] if cs < self.num_slots else [d["cs"] for d in self._detected_slots()]
         for t in targets:
             if op == "probe":
                 self._socket_result[t] = None
@@ -2806,8 +2836,8 @@ class HydraUI(ctk.CTk):
         image_crc: Optional[int] = None,
     ):
         """Append one row to the CSV flash log (worker thread)."""
-        slot = self.slots[cs] if cs < NUM_SLOTS else None
-        ident = self._socket_ident[cs] if cs < NUM_SLOTS else _UNSCANNED
+        slot = self.slots[cs] if cs < self.num_slots else None
+        ident = self._socket_ident[cs] if cs < self.num_slots else _UNSCANNED
         row = {
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "mode": "production" if self._job.get("production") else "manual",
@@ -3070,7 +3100,7 @@ class HydraUI(ctk.CTk):
     def _probe_all_sockets(self) -> List[dict]:
         """Worker thread: probe every socket one by one, return the detected ones."""
         first_output = ""
-        for cs in range(NUM_SLOTS):
+        for cs in range(self.num_slots):
             self.after(0, self.update_progress, f"CS{cs}")
             _, text = self._exec([], cs, silent=True)
             first_output = first_output or text
@@ -3271,7 +3301,7 @@ class HydraUI(ctk.CTk):
         return None
 
     def _require_probed(self, cs: int) -> Optional[dict]:
-        slot = self.slots[cs] if cs < NUM_SLOTS else None
+        slot = self.slots[cs] if cs < self.num_slots else None
         if slot and slot.get("unsupported"):
             self._alert("Unsupported chip", self._unsupported_msg(cs), error=True)
             return None
@@ -3471,7 +3501,7 @@ class HydraUI(ctk.CTk):
                 )
             return (
                 True,
-                f"Probe complete — {len(detected)}/{NUM_SLOTS} sockets populated.",
+                f"Probe complete — {len(detected)}/{self.num_slots} sockets populated.",
             )
 
         self._start_job(
@@ -4298,20 +4328,22 @@ class HydraUI(ctk.CTk):
         self.log_line(" Tips for getting started:", "normal")
         self.log_line(" 1. Insert chips – sockets are detected live", "dim")
         self.log_line(" 2. Back up the chip image(s) with read", "dim")
-        self.log_line(
-            " 3. Write – with ALL, identical chips are flashed at once, then verified one by one",
-            "dim",
-        )
-        self.log_line(" 4. Flashing many chips? Turn on production mode", "dim")
-        self.log_line(
-            " 5. Busy? Start jobs on other sockets anyway – they queue up and run in turn",
-            "dim",
-        )
-        if self._dnd:
-            self.log_line(
-                " 6. Drag an image onto a socket card to write it, onto this log to verify",
-                "dim",
+        tips = [
+            "Write – with ALL, identical chips are flashed at once, then verified one by one"
+            if self.has_all
+            else "Write – blank check, write and verify run in one go",
+            "Flashing many chips? Turn on production mode",
+        ]
+        if self.has_all:
+            tips.append(
+                "Busy? Start jobs on other sockets anyway – they queue up and run in turn"
             )
+        if self._dnd:
+            tips.append(
+                "Drag an image onto a socket card to write it, onto this log to verify"
+            )
+        for n, tip in enumerate(tips, 3):
+            self.log_line(f" {n}. {tip}", "dim")
 
     def _on_closing(self):
         if self.busy or self._queue:
