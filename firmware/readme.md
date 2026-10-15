@@ -52,7 +52,7 @@ GitHub Actions builds the firmware on every push that touches `firmware/` (again
 git tag fw-v1.1 && git push origin fw-v1.1
 ```
 
-The workflow checks that the tag matches `FW_VERSION` and publishes a GitHub Release with `hydraflasher-fw-<version>.uf2`. The HydraFlasher app's settings page offers the newest one as "latest", and can also install any `.uf2` file.
+First add a `## <version> · <date>` section to [CHANGELOG.md](CHANGELOG.md) (new, changed, hardware, fixed, compatibility): it becomes the release notes, followed by GitHub's list of merged pull requests. The workflow checks that the tag matches `FW_VERSION` and that the changelog has the section, then publishes a GitHub Release with `hydraflasher-fw-<version>.uf2`. The HydraFlasher app's settings page offers the newest one as "latest", and can also install any `.uf2` file.
 
 ## Using it with flashprog or flashrom
 
