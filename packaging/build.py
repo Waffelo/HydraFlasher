@@ -99,6 +99,15 @@ def build_windows(version: str):
         os.path.join(PKG, "windows", "installer.iss"),
     ])
 
+    # Install it for real (silently, this user only, into a temporary folder),
+    # self-test the installed program, uninstall it again
+    setup = os.path.join(RELEASE, f"HydraFlasher-Setup-{version}.exe")
+    target = tempfile.mkdtemp(prefix="hydraflasher-install-")
+    run([setup, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER",
+         f"/DIR={target}"])
+    self_test([os.path.join(target, "HydraFlasher.exe")])
+    run([os.path.join(target, "unins000.exe"), "/VERYSILENT", "/SUPPRESSMSGBOXES"])
+
 
 def build_linux(version: str):
     icon = os.path.join(PKG, "icons", "hydraflasher.png")
