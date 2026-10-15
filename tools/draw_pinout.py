@@ -41,18 +41,26 @@ LEFT = {  # pin: (label, colour, GPIO)
     4: ("SCK", "#43a047", "GP2"),
     5: ("MOSI", "#43a047", "GP3"),
     6: ("MISO", "#43a047", "GP4"),
+    # CS0-CS3: the default 4 sockets; CS4-CS9: more sockets ("sockets" in the config)
     7: ("CS0", "#1e88e5", "GP5"),
     9: ("CS1", "#1e88e5", "GP6"),
     10: ("CS2", "#1e88e5", "GP7"),
     11: ("CS3", "#1e88e5", "GP8"),
-    12: ("CS4 (spare)", "#64b5f6", "GP9"),
-    14: ("CS5 (spare)", "#64b5f6", "GP10"),
-    15: ("LED busy", "#fb8c00", "GP11"),
-    16: ("LED pass", "#2e7d32", "GP12"),
-    17: ("LED fail", "#e53935", "GP13"),
+    12: ("CS4", "#64b5f6", "GP9"),
+    14: ("CS5", "#64b5f6", "GP10"),
+    15: ("CS6", "#64b5f6", "GP11"),
+    16: ("CS7", "#64b5f6", "GP12"),
+    17: ("CS8", "#64b5f6", "GP13"),
+    19: ("CS9", "#64b5f6", "GP14"),
 }
 LEFT_GND = {3, 8, 13, 18}
-RIGHT = {36: ("3V3 (OUT)", "#e53935"), 38: ("GND", "#37474f")}
+RIGHT = {  # pin: (label, colour, GPIO)
+    21: ("LED busy", "#fb8c00", "GP16"),
+    22: ("LED pass", "#2e7d32", "GP17"),
+    24: ("LED fail", "#e53935", "GP18"),
+    36: ("3V3 (OUT)", "#e53935", ""),
+    38: ("GND", "#37474f", ""),
+}
 RIGHT_GND = {33, 28, 23}
 
 
@@ -96,10 +104,12 @@ for pin in range(1, 41):
             d.text(s(BX0 - 36, y), f"{pin}  GND", font=f_small, fill="#78909c", anchor="rm")
     else:
         if pin in RIGHT:
-            text, colour = RIGHT[pin]
+            text, colour, gp = RIGHT[pin]
             d.line(s(px, y, BX1 + 60, y), fill="#90a4ae", width=2 * K)
             num_box(BX1 + 44, y, pin)
             label(BX1 + 66, y, text, colour, align_right=False)
+            if gp:
+                d.text(s(px - 16, y), gp, font=f_gp, fill="#e8f5e9", anchor="rm")
         elif pin in RIGHT_GND:
             d.line(s(px, y, BX1 + 30, y), fill="#90a4ae", width=2 * K)
             d.text(s(BX1 + 36, y), f"GND  {pin}", font=f_small, fill="#78909c", anchor="lm")
@@ -108,14 +118,15 @@ for pin in range(1, 41):
 d.text(s(BX0 + 30, pin_y(1)), "1", font=f_small, fill="#e8f5e9", anchor="lm")
 d.text(s(BX1 - 30, pin_y(40)), "40", font=f_small, fill="#e8f5e9", anchor="rm")
 d.text(s(BX0 + 30, pin_y(20)), "20", font=f_small, fill="#e8f5e9", anchor="lm")
-d.text(s(BX1 - 30, pin_y(21)), "21", font=f_small, fill="#e8f5e9", anchor="rm")
+# (no "21": that pad's GPIO label sits there, and pin 21 is numbered outside)
 
 # Legend
 ly = BY1 + 28
-for i, (text, colour) in enumerate((("SPI (shared by all sockets)", "#43a047"),
-                                    ("chip select, one per socket", "#1e88e5"),
+for i, (text, colour) in enumerate((("SPI, shared", "#43a047"),
+                                    ("CS, sockets 1-4", "#1e88e5"),
+                                    ("CS, sockets 5-10", "#64b5f6"),
                                     ("status LEDs", "#fb8c00"))):
-    x = 120 + i * 220
+    x = 70 + i * 185
     d.rounded_rectangle(s(x, ly - 7, x + 14, ly + 7), radius=3 * K, fill=colour)
     d.text(s(x + 22, ly), text, font=f_gp, fill="#78909c", anchor="lm")
 

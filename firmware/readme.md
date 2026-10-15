@@ -6,7 +6,7 @@ It's based on [pico-serprog](https://github.com/stacksmashing/pico-serprog) by T
 
 ## What it adds to pico-serprog
 
-- **Six chip-select lines** (CS0 to CS5) instead of one, chosen with the serprog `cs=<n>` option. **CS6 is a broadcast** that selects all sockets at once, for erasing and writing identical chips in parallel.
+- **Ten chip-select lines** (CS0 to CS9) instead of one, chosen with the serprog `cs=<n>` option. **CS10 is a broadcast** that selects all sockets at once, for erasing and writing identical chips in parallel.
 - **Status LEDs** for busy, pass and fail, set by the host.
 - **CRC32 on the Pico.** The DMA sniffer computes a CRC32 of a flash range while it streams in at full SPI speed. Nothing goes over USB, so verifying and blank checking are much faster than reading the chip back.
 - **Reboot into the bootloader** over USB, so new firmware can be flashed without pressing BOOTSEL.
@@ -23,12 +23,13 @@ It's based on [pico-serprog](https://github.com/stacksmashing/pico-serprog) by T
 | MOSI | GP3 | 5 |
 | MISO | GP4 (pull-up) | 6 |
 | CS0 / CS1 / CS2 / CS3 | GP5 / GP6 / GP7 / GP8 | 7 / 9 / 10 / 11 |
-| CS4 / CS5 | GP9 / GP10 | 12 / 14 |
-| LED busy (orange) | GP11 | 15 |
-| LED pass (green) | GP12 | 16 |
-| LED fail (red) | GP13 | 17 |
+| CS4 / CS5 / CS6 | GP9 / GP10 / GP11 | 12 / 14 / 15 |
+| CS7 / CS8 / CS9 | GP12 / GP13 / GP14 | 16 / 17 / 19 |
+| LED busy (orange) | GP16 | 21 |
+| LED pass (green) | GP17 | 22 |
+| LED fail (red) | GP18 | 24 |
 
-All sockets share SCK, MOSI and MISO; each socket gets its own CS line, which idles high. The HydraFlasher GUI uses CS0 to CS3; CS4 and CS5 are spare. The LEDs are active high: the GPIO goes high to light one. At most one is lit at a time, and all are off at power-up.
+All sockets share SCK, MOSI and MISO; each socket gets its own CS line, which idles high. The HydraFlasher GUI uses CS0 to CS3 by default; set `sockets` in its config to use up to all ten. The LEDs sit on the other side of the board, across from the CS lines. The LEDs are active high: the GPIO goes high to light one. At most one is lit at a time, and all are off at power-up.
 
 ![Pico pinout: SPI, chip selects, LEDs, 3V3 and GND](pinout.png)
 
@@ -52,12 +53,12 @@ The Pico shows up as a USB serial port (`/dev/ttyACM0` or similar on Linux, a CO
 ```sh
 flashprog -p serprog:dev=/dev/ttyACM0,spispeed=16M,cs=0 -r backup.bin  # read CS0
 flashprog -p serprog:dev=/dev/ttyACM0,spispeed=16M,cs=1 -w image.bin   # write CS1
-flashprog -p serprog:dev=/dev/ttyACM0,spispeed=16M,cs=6 -E             # erase all
+flashprog -p serprog:dev=/dev/ttyACM0,spispeed=16M,cs=10 -E            # erase all
 ```
 
 `spispeed` can be anything from 100 kHz to 50 MHz; the RP2040 picks the nearest rate it can make. Start at 16M and lower it if reads fail on long wires.
 
-**Broadcast (`cs=6`) can't read.** All chips answer at the same time, so anything read over CS6 is garbage. That includes the probe, flashprog's read-before-write and its verify. Erase over CS6 first, so all chips have identical contents, write with `-n` (no verify), then verify each socket on its own. The HydraFlasher GUI does exactly this for "ALL".
+**Broadcast (`cs=10`) can't read.** All chips answer at the same time, so anything read over the broadcast is garbage. That includes the probe, flashprog's read-before-write and its verify. Erase over the broadcast first, so all chips have identical contents, write with `-n` (no verify), then verify each socket on its own. The HydraFlasher GUI does exactly this for "ALL".
 
 ## Protocol
 
@@ -74,7 +75,7 @@ Supported standard commands:
 | Read per SPI operation | 64 KiB |
 | Serial buffer | 64 bytes |
 | SPI mode | Mode 0 only, CS active low (mode commands are accepted and ignored) |
-| `S_CMD_S_SPI_CS` | 0 to 5 select one socket, 6 is broadcast; anything else is NAKed |
+| `S_CMD_S_SPI_CS` | 0 to 9 select one socket, 10 is broadcast; anything else is NAKed |
 
 ### Custom commands
 
@@ -84,9 +85,12 @@ Defined in `serprog.h`. Multi-byte values are little-endian; every command answe
 | --- | --- | --- | --- |
 | `0x20` | `S_CMD_SET_LED` | state (1 byte): 0 off, 1 busy (orange), 2 pass (green), 3 fail (red) | ACK |
 | `0x21` | `S_CMD_BOOTSEL` | none | ACK, then the Pico reboots into its USB bootloader (`RPI-RP2` drive) |
-| `0x22` | `S_CMD_CRC32` | cs (1), address bytes (1: 3 or 4), address (4), length (4) | ACK + CRC32 (4); NAK if cs ≥ 6, address bytes isn't 3 or 4, or length is 0 |
+| `0x22` | `S_CMD_CRC32` | cs (1), address bytes (1: 3 or 4), address (4), length (4) | ACK + CRC32 (4); NAK if cs ≥ 10 (no broadcast), address bytes isn't 3 or 4, or length is 0 |
+| `0x23` | `S_CMD_Q_NUM_CS` | none | ACK + number of CS lines (1 byte, 10). The broadcast index is the same number. |
 
-`S_CMD_CRC32` reads the range with `READ` (`03h`), or with `READ4B` (`13h`) when 4 address bytes are given. Chips over 16 MiB need 4 address bytes. The result is the standard zlib/IEEE CRC32, the same as Python's `zlib.crc32`. The command can't use CS6, since a broadcast read would be garbage.
+`S_CMD_CRC32` reads the range with `READ` (`03h`), or with `READ4B` (`13h`) when 4 address bytes are given. Chips over 16 MiB need 4 address bytes. The result is the standard zlib/IEEE CRC32, the same as Python's `zlib.crc32`. The command can't use the broadcast, since a broadcast read would be garbage.
+
+`S_CMD_Q_NUM_CS` tells a host how many CS lines there are and so where the broadcast is. Firmware older than this command has six CS lines (CS0 to CS5) with the broadcast on 6, the LEDs on GP11 to GP13 and no `0x23` in its command map; the HydraFlasher GUI handles both.
 
 ## Notes for developers
 

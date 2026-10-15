@@ -1,6 +1,8 @@
-"""Configurable socket count ("sockets" in the config): 6 sockets end to end
-(scan, cards, shortcuts, single write, broadcast write + per-socket verify), 2
-sockets (a saved target beyond the count falls back), invalid values (warning, 4).
+"""Configurable socket count ("sockets" in the config) and the firmware's CS lines.
+six: old firmware (6 CS, broadcast cs=6) end to end: scan, cards, shortcuts, single
+write, broadcast write + per-socket verify. ten: current firmware (10 CS, asked via
+S_CMD_Q_NUM_CS, broadcast cs=10), Alt+0. old8: 8 sockets on old firmware (CS6/CS7
+refused, never scanned). two/one: fewer sockets, saved targets. bad_*: warning, 4.
 Each case runs in its own process: the window is built once per start."""
 import json
 import os
@@ -11,7 +13,7 @@ import sys
 here = os.path.dirname(os.path.abspath(__file__))
 
 if len(sys.argv) < 4:  # parent: run every case and pass its PASS/FAIL lines on
-    for case in ("six", "two", "one", "bad_text", "bad_seven", "bad_zero"):
+    for case in ("six", "ten", "old8", "two", "one", "bad_text", "bad_eleven", "bad_zero"):
         out = subprocess.run(
             [sys.executable, os.path.abspath(__file__), sys.argv[1], sys.argv[2], case],
             capture_output=True, text=True, timeout=100,
@@ -43,30 +45,37 @@ os.makedirs(work, exist_ok=True)
 H.CONFIG_FILE = os.path.join(work, "cfg.json")
 H.DATA_DIR = work
 H.FLASH_LOG = os.path.join(work, "flash_log.csv")
-sockets = {"six": 6, "two": 2, "one": 1, "bad_text": "6", "bad_seven": 7, "bad_zero": 0}[case]
+sockets = {"six": 6, "ten": 10, "old8": 8, "two": 2, "one": 1,
+           "bad_text": "6", "bad_eleven": 11, "bad_zero": 0}[case]
+new_fw = case == "ten"  # firmware answering S_CMD_Q_NUM_CS with 10
+fw_cs = 10 if new_fw else 6
 json.dump(
     {
         "sockets": sockets,
-        # last target from a 6-socket setup (ALL for the single-socket case)
-        "cs": "All chips (CS6)" if case == "one" else "6 (CS5)",
+        # last target from a 6-socket setup; ALL as older versions saved it
+        "cs": "All chips (CS6)" if case in ("one", "two") else "6 (CS5)",
         "fast_verify": False,
         "partial_write": False,
         "jedec_cache": {"EF4018": {"chips": ["W25Q128.V"], "size_kb": 16384}},
     },
     open(H.CONFIG_FILE, "w"),
 )
-idents = {cs: ("EF4018", f"U{cs}") for cs in range(6)}  # a chip on every CS line
-scanned = set()
+idents = {cs: ("EF4018", f"U{cs}") for cs in range(10)}  # a chip on every CS line
+scanned, naks = set(), []
 
 
 class FakeProgrammer:
     def __init__(self, port): pass
     def close(self): pass
-    def command_map(self): return set()
+    def command_map(self): return {H.S_CMD_Q_NUM_CS} if new_fw else set()
+    def num_cs(self): return 10
     def set_speed(self, hz): pass
     def pins(self, on): pass
 
     def identify(self, cs):
+        if cs >= fw_cs:  # the firmware NAKs a CS line it doesn't have
+            naks.append(cs)
+            raise H.ProgrammerError("NAK")
         scanned.add(cs)
         return idents.get(cs, (None, None))
 
@@ -75,7 +84,7 @@ H.Programmer = FakeProgrammer
 # fakeflash.py reads chips.txt and logs to calls.log next to itself
 fake = os.path.join(work, "fakeflash.py")
 shutil.copy(os.path.join(here, "fakeflash.py"), fake)  # keeps it executable
-open(os.path.join(work, "chips.txt"), "w").write("0 1 2 3 4 5 6")
+open(os.path.join(work, "chips.txt"), "w").write(" ".join(str(c) for c in range(11)))
 calls_log = os.path.join(work, "calls.log")
 open(calls_log, "w").close()
 img = os.path.join(work, "img.bin")
@@ -122,10 +131,15 @@ def common(n):
     check("Alt+A only with ALL", bool(app.bind("<Alt-Key-a>")) == (n > 1))
     check("per-socket state sized to the count",
           len(app.slots) == len(app._socket_result) == len(app._socket_ident) == n)
-    check("live scan reads only these sockets", scanned == set(range(n)))
+    check("live scan reads only these sockets", scanned == set(range(min(n, fw_cs))))
+    check("no socket the firmware lacks was asked", not naks)
     check("config keeps the count", json.load(open(H.CONFIG_FILE))["sockets"] == n)
-    check(f"Alt+{n} bound, Alt+{n + 1} not",
-          bool(app.bind(f"<Alt-Key-{n}>")) and not app.bind(f"<Alt-Key-{n + 1}>"))
+    if n < 10:
+        check(f"Alt+{n} bound, Alt+{n + 1} not",
+              bool(app.bind(f"<Alt-Key-{n}>")) and not app.bind(f"<Alt-Key-{n + 1}>"))
+    else:
+        check("Alt+0 bound for socket 10", bool(app.bind("<Alt-Key-0>")))
+    check("firmware CS lines detected", app._fw_cs == fw_cs)
 
 
 def s_six():
@@ -162,9 +176,66 @@ def s_six_done():
     app.destroy()
 
 
+def s_ten():
+    common(10)
+    check("CS9 identified", app.slots[9] and app.slots[9]["detected"])
+    check("ALL card counts 10 chips", "10 identical" in app.cards[H.CS_ALL]._texts[1])
+    app.focus_force()
+    app.update()
+    app.event_generate("<Alt-Key-0>")
+    app.update()
+    check("Alt+0 selects CS9", app._selected_cs() == 9)
+    app._write_file(img)
+    wait_idle(s_ten_all)
+
+
+def s_ten_all():
+    check("write ran on CS9", any("cs=9" in c and "-w" in c for c in calls()))
+    open(calls_log, "w").close()
+    app._select_target(H.CS_ALL)
+    app._write_file(img)
+    wait_idle(s_ten_done)
+
+
+def s_ten_done():
+    c = calls()
+    check("broadcast erase + write over cs=10",
+          any("cs=10" in x and "-E" in x for x in c) and any("cs=10" in x and "-w" in x for x in c))
+    check("no cs=6 broadcast on the new firmware", not any("cs=6" in x and "-w" in x for x in c))
+    verified = sorted({int(x.split("cs=")[1].split()[0]) for x in c if "-v" in x})
+    check("each of the 10 sockets verified on its own", verified == list(range(10)))
+    check("broadcast write succeeded", results and results[-1][0]
+          and "10 chip(s)" in results[-1][1])
+    app.destroy()
+
+
+def s_old8():
+    common(8)
+    check("warning: firmware has fewer CS lines",
+          "firmware has 6 CS lines" in log_text())
+    check("CS6 and CS7 cards say so",
+          all(app.cards[c]._texts[1] == "no CS line in firmware" for c in (6, 7)))
+    n = len(app._queue)
+    ok = app._start_write(img, 7)
+    check("job on CS7 refused", ok is False and not app.busy and len(app._queue) == n
+          and "CS7 has no CS line" in log_text())
+    app._select_target(H.CS_ALL)
+    app._write_file(img)
+    wait_idle(s_old8_done)
+
+
+def s_old8_done():
+    c = calls()
+    check("broadcast stays cs=6 on old firmware",
+          any("cs=6" in x and "-w" in x for x in c) and not any("cs=10" in x for x in c))
+    verified = sorted({int(x.split("cs=")[1].split()[0]) for x in c if "-v" in x})
+    check("only the 6 real sockets verified", verified == list(range(6)))
+    app.destroy()
+
+
 def s_two():
     common(2)
-    check("saved target CS5 falls back to CS0", app._selected_cs() == 0)
+    check("ALL saved by an older version still selected", app._selected_cs() == H.CS_ALL)
     check("ALL counts only 2 chips", "2 identical" in app.cards[H.CS_ALL]._texts[1])
     check("no warning for a valid count", 'Config "sockets"' not in log_text())
     app.destroy()
@@ -199,6 +270,7 @@ def s_bad():
     app.destroy()
 
 
-app.after(3000, {"six": s_six, "two": s_two, "one": s_one}.get(case, s_bad))
+app.after(3000, {"six": s_six, "ten": s_ten, "old8": s_old8, "two": s_two,
+                 "one": s_one}.get(case, s_bad))
 app.after(80000, app.destroy)
 app.mainloop()

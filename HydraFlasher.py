@@ -79,13 +79,18 @@ S_CMD_S_PIN_STATE = 0x15
 S_CMD_S_SPI_CS = 0x16
 S_CMD_SET_LED = 0x20
 S_CMD_CRC32 = 0x22
+S_CMD_Q_NUM_CS = 0x23  # number of CS pins; the broadcast index is the same number
 
 DEFAULT_SLOTS = 4
-# The firmware has 6 chip selects (CS0-CS5); CS_ALL (6) is the broadcast, so every
-# socket number stays below it and "cs < self.num_slots" means a single socket
-MAX_SLOTS = 6
-CS_ALL = 6
-CS_ALL_LABEL = "All chips (CS6)"
+MAX_SLOTS = 10  # the firmware has 10 chip selects (CS0-CS9)
+# Firmware without S_CMD_Q_NUM_CS: 6 chip selects, broadcast on index 6
+LEGACY_CS_PINS = 6
+# The broadcast target inside the GUI: above every socket number, so
+# "cs < self.num_slots" means a single socket. flashprog gets the firmware's own
+# broadcast index instead (job["broadcast"], see _build_command).
+CS_ALL = MAX_SLOTS
+CS_ALL_LABEL = "All chips (broadcast)"
+CS_ALL_LABEL_OLD = "All chips (CS6)"  # saved by older versions
 SPI_SPEEDS = ["4M", "8M", "12M", "16M", "20M", "24M", "30M", "36M", "40M", "48M"]
 SCAN_INTERVAL_MS = 1000
 SCAN_SPEED_HZ = 8_000_000
@@ -425,6 +430,9 @@ class Programmer:
         bits = int.from_bytes(self._cmd(S_CMD_Q_CMDMAP, nresp=32), "little")
         return {i for i in range(256) if bits >> i & 1}
 
+    def num_cs(self) -> int:
+        return self._cmd(S_CMD_Q_NUM_CS, nresp=1)[0]
+
     def set_speed(self, hz: int):
         self._cmd(S_CMD_S_SPI_FREQ, struct.pack("<I", hz), 4)
 
@@ -709,6 +717,8 @@ class HydraUI(ctk.CTk):
         self.cs_labels = {v: k for k, v in self.cs_map.items()}
 
         cs_display = self.cfg.get("cs", "1 (CS0)")
+        if cs_display == CS_ALL_LABEL_OLD:
+            cs_display = CS_ALL_LABEL
         spispeed = self.cfg.get("spispeed", "16M")
 
         self.sudo_password: Optional[str] = None
@@ -726,6 +736,8 @@ class HydraUI(ctk.CTk):
         # Live scan / direct programmer access
         self._port_lock = threading.Lock()
         self._fw_caps: Optional[Set[int]] = None
+        # CS lines of the connected firmware (None: not asked yet, e.g. under sudo)
+        self._fw_cs: Optional[int] = None
         self._scan_running = False
         self._log_lock = threading.Lock()
 
@@ -805,7 +817,9 @@ class HydraUI(ctk.CTk):
         for key, fn in shortcuts.items():
             self.bind(key, lambda e, fn=fn: self._shortcut(fn))
         for i in range(self.num_slots):
-            self.bind(f"<Alt-Key-{i + 1}>", lambda e, cs=i: self._select_target(cs))
+            # Number row: socket 10 is Alt+0
+            key = (i + 1) % 10
+            self.bind(f"<Alt-Key-{key}>", lambda e, cs=i: self._select_target(cs))
         if self.has_all:
             self.bind("<Alt-Key-a>", lambda e: self._select_target(CS_ALL))
         self.bind("<Control-l>", lambda e: self._clear_log())
@@ -1066,7 +1080,8 @@ class HydraUI(ctk.CTk):
 
     def _create_sockets(self, parent):
         drop = " · drop an image to write" if self._dnd else ""
-        keys = "alt+1" if self.num_slots == 1 else f"alt+1…{self.num_slots}"
+        n = self.num_slots
+        keys = "alt+1" if n == 1 else f"alt+1…{min(n, 9)}" + (", alt+0" if n == 10 else "")
         self._section(
             parent,
             f"sockets  · live · click to select target{drop}  "
@@ -1079,7 +1094,7 @@ class HydraUI(ctk.CTk):
         for i, cs in enumerate(list(range(self.num_slots)) + all_card):
             if cs == CS_ALL:
                 card = SocketCard(
-                    row, "ALL", "CS6", self.fonts, lambda: self._select_target(CS_ALL)
+                    row, "ALL", "all", self.fonts, lambda: self._select_target(CS_ALL)
                 )
             else:
                 card = SocketCard(
@@ -1460,7 +1475,9 @@ class HydraUI(ctk.CTk):
             broadcast_busy = (
                 CS_ALL in self._busy_sockets and slot is not None and slot["detected"]
             )
-            if cs in self._busy_sockets or broadcast_busy:
+            if self._fw_cs is not None and cs >= self._fw_cs:
+                card.set_state("fail", "—", "no CS line in firmware", T["red"])
+            elif cs in self._busy_sockets or broadcast_busy:
                 card.set_state("busy", name, "working…", T["accent"])
             elif cs in queued:
                 card.set_state(
@@ -1541,6 +1558,7 @@ class HydraUI(ctk.CTk):
         self._socket_result = [None] * self.num_slots
         self._socket_ident = [_UNSCANNED] * self.num_slots
         self._fw_caps = None
+        self._fw_cs = None
         self._refresh_sockets()
 
     def _watch_ports(self):
@@ -1608,9 +1626,18 @@ class HydraUI(ctk.CTk):
                 prog = Programmer(port)
                 try:
                     if self._fw_caps is None:
-                        self._fw_caps = prog.command_map()
+                        caps = prog.command_map()
+                        fw_cs = (
+                            prog.num_cs() if S_CMD_Q_NUM_CS in caps else LEGACY_CS_PINS
+                        )
+                        self._fw_caps, self._fw_cs = caps, fw_cs
+                        self.after(0, self._on_fw_cs)
                     prog.set_speed(SCAN_SPEED_HZ)
-                    results = [prog.identify(cs) for cs in range(self.num_slots)]
+                    # Sockets past the firmware's CS lines would be refused (NAK)
+                    fw_cs = self._fw_cs or MAX_SLOTS
+                    results = [
+                        prog.identify(cs) for cs in range(min(self.num_slots, fw_cs))
+                    ]
                     prog.pins(False)
                 finally:
                     prog.close()
@@ -1619,6 +1646,17 @@ class HydraUI(ctk.CTk):
             finally:
                 self._port_lock.release()
         self.after(0, self._apply_scan, results)
+
+    def _on_fw_cs(self):
+        """The firmware's CS count is known (first scan after connecting)."""
+        if self._fw_cs is not None and self.num_slots > self._fw_cs:
+            self.log_note(
+                f"The programmer's firmware has {self._fw_cs} CS lines, but "
+                f'"sockets" is {self.num_slots}: CS{self._fw_cs} and up can\'t be '
+                "used – update the firmware or lower the socket count.",
+                "warning",
+            )
+        self._refresh_sockets()
 
     def _slot_from_ident(self, cs: int, ident: tuple) -> dict:
         jedec, uid = ident
@@ -2277,6 +2315,15 @@ class HydraUI(ctk.CTk):
             self.log_note("Another operation is still running.", "warning")
             return False
         title = title or status.rstrip("…")
+        if cs is not None and cs < self.num_slots and self._fw_cs is not None and (
+            cs >= self._fw_cs
+        ):
+            self.log_note(
+                f"CS{cs} has no CS line in the programmer's firmware "
+                f"({self._fw_cs} lines) – update the firmware.",
+                "error",
+            )
+            return False
         key = key or (title,)
         if key in {e["key"] for e in self._queue} or (
             self.busy and key == self._job_key
@@ -2315,6 +2362,11 @@ class HydraUI(ctk.CTk):
             "rows": [],
             "temp_files": [],
             "batch": self._prod["batch"] if (production and self._prod) else "",
+            # Unknown firmware (no direct access, e.g. sudo): assume the current one
+            "broadcast": self._fw_cs or MAX_SLOTS,
+            # Sockets the firmware has a CS line for (on old firmware CS6 is the
+            # broadcast, so a probe of "socket 7" would read every chip at once)
+            "usable": min(self.num_slots, self._fw_cs or MAX_SLOTS),
         }
         entry = {
             "status": status,
@@ -2561,7 +2613,8 @@ class HydraUI(ctk.CTk):
         cmd = [
             self.flashrom_path,
             "-p",
-            f"serprog:dev={job['port']},spispeed={job['speed']},cs={cs}",
+            f"serprog:dev={job['port']},spispeed={job['speed']},"
+            f"cs={job['broadcast'] if cs == CS_ALL else cs}",
         ]
         cmd += extra
         if job["force"]:
@@ -3079,7 +3132,7 @@ class HydraUI(ctk.CTk):
             return (
                 "The chips in the sockets are not the same type!\n\n"
                 f"{chip_list}\n\n"
-                "Broadcast (CS6) only works with identical chips.\n"
+                "Broadcast only works with identical chips.\n"
                 "Select a single socket instead."
             )
         return None
@@ -3100,7 +3153,7 @@ class HydraUI(ctk.CTk):
     def _probe_all_sockets(self) -> List[dict]:
         """Worker thread: probe every socket one by one, return the detected ones."""
         first_output = ""
-        for cs in range(self.num_slots):
+        for cs in range(self._job["usable"]):
             self.after(0, self.update_progress, f"CS{cs}")
             _, text = self._exec([], cs, silent=True)
             first_output = first_output or text
@@ -3863,7 +3916,7 @@ class HydraUI(ctk.CTk):
     def _start_write_all(
         self, path: str, expected_key: tuple, production: bool = False
     ) -> bool:
-        """Broadcast write: all chips are erased + programmed in parallel over CS6, but every
+        """Broadcast write: all chips are erased + programmed in parallel (broadcast), but every
         read during a broadcast sees all chips driving MISO at once. So the chips are erased
         first (making their contents identical, which flashprog's read-before-write relies on)
         and then verified one by one, never over the shared bus."""

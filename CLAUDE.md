@@ -40,11 +40,11 @@ Both paths hold `self._port_lock`, so only one of them has the port open at any 
 
 The port is auto-selected by `_score_port`, which prefers the HydraFlasher USB VID `0xCAFE` over the stock Pico VID `0x2E8A`, plus descriptor keywords.
 
-**Chip-select numbering.** The firmware has 6 CS pins (CS0 to CS5, on GP5 to GP10; `NUM_CS_PINS`/`CS_BROADCAST` in `firmware/main.c`). The full pinout is in `README.md`. `CS_ALL = 6` is a broadcast that pulls every CS line low at once. The GUI shows `self.num_slots` sockets: `"sockets"` in the config, 1 to `MAX_SLOTS` (6), default `DEFAULT_SLOTS` (4), read once at start because the cards are built then. Since `CS_ALL` is above every socket number, `cs < self.num_slots` means "a single socket". With one socket `has_all` is false: no ALL card, target or Alt+A, so `self.cards` has no `CS_ALL` key.
+**Chip-select numbering.** The firmware has 10 CS pins (CS0 to CS9 on GP5 to GP14, LEDs on GP16 to GP18; `NUM_CS_PINS` in `firmware/main.c`), and the broadcast that pulls every CS line low at once is the index after the last pin (`CS_BROADCAST = NUM_CS_PINS` = 10). Older firmware had 6 pins with the broadcast on 6, and no `0x23`. The full pinout is in `README.md`; `tools/draw_pinout.py` draws `firmware/pinout.png`. Inside the GUI the broadcast is always `CS_ALL = MAX_SLOTS` (10), above every socket number, so `cs < self.num_slots` means "a single socket". Only `_build_command` turns it into the firmware's index: `job["broadcast"]`, from `self._fw_cs`, which the first scan after connecting asks for (`0x23`; `LEGACY_CS_PINS` = 6 without it; unknown, e.g. under sudo, assumes the current firmware). Sockets at or above `_fw_cs` are never scanned or probed (`job["usable"]`; on old firmware `cs=6` *is* the broadcast), their cards say so, and `_start_job` refuses them. The GUI shows `self.num_slots` sockets: `"sockets"` in the config, 1 to `MAX_SLOTS` (10), default `DEFAULT_SLOTS` (4), read once at start because the cards are built then; socket 10 is Alt+0. With one socket `has_all` is false: no ALL card, target or Alt+A, so `self.cards` has no `CS_ALL` key.
 
-**Broadcast gotcha.** During a CS6 broadcast every chip drives MISO at the same time, so reads over the shared bus are garbage. "All" operations (`_start_write_all` and friends) therefore:
-1. erase and write over CS6, erasing first so all chips hold identical contents, because flashprog reads before it writes;
-2. verify each socket individually, never over CS6.
+**Broadcast gotcha.** During a broadcast every chip drives MISO at the same time, so reads over the shared bus are garbage. "All" operations (`_start_write_all` and friends) therefore:
+1. erase and write over the broadcast, erasing first so all chips hold identical contents, because flashprog reads before it writes;
+2. verify each socket individually, never over the broadcast.
 
 All chips must be the same type (`_require_same_type`).
 
@@ -52,6 +52,7 @@ All chips must be the same type (`_require_same_type`).
 - `0x20` SET_LED (mirrored as `S_CMD_SET_LED` in `HydraFlasher.py`)
 - `0x21` BOOTSEL (no GUI constant; only `firmware/build.sh flash` sends it)
 - `0x22` CRC32 (mirrored as `S_CMD_CRC32`)
+- `0x23` Q_NUM_CS, the number of CS lines = the broadcast index (mirrored as `S_CMD_Q_NUM_CS`)
 
 A new command touches three places: `serprog.h`, the hand-built `cmdmap` bitmap in `firmware/main.c` (commands ≥ 32 go in the second word), and the GUI constant. If it's missing from `cmdmap`, the GUI never sees it. The GUI detects whether the firmware supports them through `S_CMD_Q_CMDMAP` (`self._fw_caps`). The fast "on Pico" verify and the partial-write/blank-check path need CRC32 support and direct (non-sudo) port access (`_can_use_pico`). Without either, they fall back to plain flashprog.
 

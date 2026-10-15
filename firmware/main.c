@@ -9,7 +9,7 @@
  *  https://github.com/dword1511/stm32-vserprog
  *
  * Features added for HydraFlasher:
- *  - Multi chip-select support,
+ *  - Multi chip-select support (10 sockets + broadcast),
  *  - LED status indicator
  *
  */
@@ -43,19 +43,21 @@
 #define SR_WIP          0x01
 #define STATUS_WAIT_US  5000
 
-// LED status
-#define LED_ORANGE  11   // BUSY (orange)
-#define LED_GREEN   12   // PASS (green)
-#define LED_RED     13   // FAIL (red)
+// LED status (right side of the board, physical pins 21 / 22 / 24)
+#define LED_ORANGE  16   // BUSY (orange)
+#define LED_GREEN   17   // PASS (green)
+#define LED_RED     18   // FAIL (red)
 
 // ────────────────────────────────────────────────
-//  MULTI-CS SUPPORT – up to 6 physical chips + broadcast
+//  MULTI-CS SUPPORT – up to 10 physical chips + broadcast
 // ────────────────────────────────────────────────
-#define NUM_CS_PINS 6
-#define CS_BROADCAST 6  // Select all CS
+#define NUM_CS_PINS 10
+// Select all CS at once. Always the index after the last pin: hosts learn both from
+// S_CMD_Q_NUM_CS (firmware without that command has 6 pins and broadcasts on 6).
+#define CS_BROADCAST NUM_CS_PINS
 
 
-static const uint8_t cs_pins[NUM_CS_PINS] = {5, 6, 7, 8, 9, 10};
+static const uint8_t cs_pins[NUM_CS_PINS] = {5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
 
 
 static uint8_t active_cs_idx = 0;  // Defaults to CS0 if not specified
@@ -343,7 +345,8 @@ static void command_loop(void)
                 // Commands >= 32 live in the next word (1UL << 32 would overflow)
                 [S_CMD_SET_LED / 32] = (1UL << (S_CMD_SET_LED % 32)) |
                                        (1UL << (S_CMD_BOOTSEL % 32)) |
-                                       (1UL << (S_CMD_CRC32 % 32)),
+                                       (1UL << (S_CMD_CRC32 % 32))   |
+                                       (1UL << (S_CMD_Q_NUM_CS % 32)),
             };
 
             sendbyte_blocking(S_ACK);
@@ -528,6 +531,12 @@ static void command_loop(void)
             break;
         }
 
+        case S_CMD_Q_NUM_CS:
+            // Number of CS pins; the broadcast index is this same number
+            sendbyte_blocking(S_ACK);
+            sendbyte_blocking(NUM_CS_PINS);
+            break;
+
         case S_CMD_BOOTSEL:
             // Lets build.sh flash new firmware without pressing the BOOTSEL button
             sendbyte_blocking(S_ACK);
@@ -571,7 +580,6 @@ int main()
 
     // ────────────────────────────────────────────────
     //  Initialize all CS pins – high = deselected
-    //  (GP10 is prepared for a future 6th socket)
     // ────────────────────────────────────────────────
     for (int i = 0; i < NUM_CS_PINS; i++) {
         gpio_init(cs_pins[i]);
