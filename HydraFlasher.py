@@ -949,6 +949,11 @@ class HydraUI(ctk.CTk):
         # firmware can't tell; _sockets_pending: apply the count once idle
         self._wired: Optional[int] = None
         self._sockets_pending = False
+        # The last detection result logged (kept across reconnects, so a replugged
+        # board doesn't log the same wiring again), and whether auto switched itself
+        # to manual because no pull-ups were found
+        self._wired_logged: Optional[int] = None
+        self._auto_fell_back = False
 
         self._build_cs_map()
 
@@ -2128,25 +2133,47 @@ class HydraUI(ctk.CTk):
         self._refresh_sockets()
         self._refresh_settings()
 
-    def _set_wired(self, wired: Optional[int]):
-        """New wiring detection result: log it, apply the count in auto mode."""
+    def _set_wired(self, wired: Optional[int], explicit: bool = False):
+        """New wiring detection result (on connect, or explicit: detect again).
+        No pull-ups found switches auto to manual, so a board without them (or with
+        flaky wiring) doesn't make the count change at every reconnect; only detect
+        again switches back to auto when it finds them. A result is logged only when
+        it differs from the last one."""
         self._wired = wired
-        if wired:
+        if wired and wired != self._wired_logged:  # "none" has its own warning
+            self._wired_logged = wired
             self.log_note(f"Sockets wired: {self._wired_text(wired)}", "info")
+        if wired:
             for cs in range(self.num_slots):  # forget chips seen on unwired lines
                 if not wired >> cs & 1:
                     self.slots[cs] = None
                     self._socket_ident[cs] = _UNSCANNED
+            if explicit and not self.sockets_auto:
+                self.sockets_auto, self._auto_fell_back = True, False
+                self.save_config()
+                self.log_note("Pull-up resistors found: socket count back to auto", "info")
+        elif wired == 0 and self.sockets_auto:
+            self.sockets_auto, self._auto_fell_back = False, True
+            self.save_config()
+            self.log_note(
+                "No pull-up resistors found on the CS lines: socket count switched to "
+                f"manual ({self.manual_sockets}). Add a 10 kΩ from each /CS to 3V3, "
+                "then settings → sockets → detect again.",
+                "warning",
+            )
+        elif wired == 0 and explicit:
+            self.log_note(
+                "No wired sockets detected (no pull-ups on the CS lines).", "warning"
+            )
         self._apply_auto_sockets()
         self._refresh_sockets()
         self._refresh_settings()
 
     def _apply_auto_sockets(self):
-        """In auto mode, show the detected count (or the manual one without a
-        detection). Waits while jobs run or wait (_finish_job applies it)."""
-        if not self.sockets_auto:
-            return
-        detected = self._auto_count()
+        """Show the count of the current mode: in auto the detected one (or the
+        manual one without a detection), in manual the manual one. Waits while jobs
+        run or wait (_finish_job applies it)."""
+        detected = self._auto_count() if self.sockets_auto else None
         if detected and detected != self.sockets_detected:
             self.sockets_detected = detected
             self.save_config()
@@ -2158,7 +2185,8 @@ class HydraUI(ctk.CTk):
             self._sockets_pending = True
             return
         self._sockets_pending = False
-        self._set_socket_count(n, "detected" if detected else "")
+        why = "detected" if detected else ("" if self.sockets_auto else "manual")
+        self._set_socket_count(n, why)
 
     def _detect_sockets(self):
         """Ask the firmware again which CS lines are wired (settings button)."""
@@ -2185,10 +2213,7 @@ class HydraUI(ctk.CTk):
             except Exception as e:
                 self.after(0, self.log_note, f"Socket detection failed: {e}", "error")
                 return
-            self.after(0, self._set_wired, wired)
-            if not wired:
-                self.after(0, self.log_note, "No wired sockets detected (no pull-ups "
-                           "on the CS lines).", "warning")
+            self.after(0, self._set_wired, wired, True)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -5116,7 +5141,8 @@ class HydraUI(ctk.CTk):
         """The socket count's source, for the settings page."""
         lines = "CS0" if self.num_slots == 1 else f"CS0–CS{self.num_slots - 1}"
         if not self.sockets_auto:
-            return f"manual · {lines}"
+            why = " (no pull-ups found)" if self._auto_fell_back else ""
+            return f"manual{why} · {lines}"
         if self._wired:
             return f"detected {self._wired_text(self._wired)}"
         if self._fw_caps is None:
@@ -5131,7 +5157,7 @@ class HydraUI(ctk.CTk):
     def _on_sockets_choice(self, value: str):
         if value == "auto":
             if not self.sockets_auto:
-                self.sockets_auto = True
+                self.sockets_auto, self._auto_fell_back = True, False
                 self.save_config()
                 self.log_note("Socket count: auto (detected wiring)", "info")
                 self._apply_auto_sockets()
@@ -5141,6 +5167,7 @@ class HydraUI(ctk.CTk):
             if self._set_socket_count(n, "manual"):
                 was_auto = self.sockets_auto
                 self.sockets_auto, self.manual_sockets = False, n
+                self._auto_fell_back = False
                 self.save_config()
                 if was_auto:
                     self._refresh_sockets()  # "not wired" sockets are usable again

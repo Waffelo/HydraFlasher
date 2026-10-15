@@ -178,15 +178,52 @@ def m5():
 
 def m6():
     check("busy: applied after the job", app.num_slots == 5 and not app._sockets_pending)
-    # Nothing detected: the fallback count
-    state["wired"] = 0
+    # No pull-ups seen (on connect): auto switches to manual, once
+    wired_logs = log_text().count("Sockets wired:")
     app._set_wired(0)
-    check("no pull-ups: manual count (6) used", app.num_slots == 6)
+    check("no pull-ups: switched to manual, manual count (6)",
+          not app.sockets_auto and app.num_slots == 6 and cfg_now()["sockets_auto"] is False)
+    check("no pull-ups: one clear warning", log_text().count("No pull-up resistors found") == 1)
+    check("settings explain", summary() == "manual (no pull-ups found) · CS0–CS5")
+    # Flaky wiring: reconnects alternate pull-ups / none -- nothing flips any more
+    for bits in (0b1111, 0, 0b1111, 0):
+        app._reset_sockets()  # what a disconnect does
+        app._set_wired(bits)  # what the next connect's detection does
+    check("flaky reconnects: stays manual with the same count",
+          not app.sockets_auto and app.num_slots == 6)
+    check("flaky reconnects: no new warnings", log_text().count("No pull-up resistors found") == 1)
+    check("flaky reconnects: wiring logged only when it changed",
+          log_text().count("Sockets wired:") == wired_logs + 1)
+    # detect again with pull-ups: back to auto
+    state["wired"] = 0b1111
+    app._detect_sockets()
+    app.after(800, m7)
+
+
+def m7():
+    check("detect again with pull-ups: back to auto, 4 sockets",
+          app.sockets_auto and app.num_slots == 4 and cfg_now()["sockets_auto"] is True)
+    check("back to auto logged", "socket count back to auto" in log_text())
+    # The same wiring after a reconnect isn't logged again
+    n = log_text().count("Sockets wired:")
+    app._reset_sockets()
+    app._set_wired(0b1111)
+    check("same wiring after a reconnect: not logged again", log_text().count("Sockets wired:") == n)
+    # detect again without pull-ups while in auto: manual again
+    state["wired"] = 0
+    app._detect_sockets()
+    app.after(800, m8)
+
+
+def m8():
+    check("detect again without pull-ups: manual", not app.sockets_auto and app.num_slots == 6)
+    # The auto fallback count (no detection support): set while in auto
+    app._on_sockets_choice("auto")
+    app._wired = None
     app._open_settings()
     app._on_fallback_choice("3")
     app._close_settings()
-    check("fallback changed: 3 sockets", app.num_slots == 3 and cfg_now()["sockets"] == 3)
-    check("settings explain", summary() == "nothing detected (no pull-ups on CS) · using 3")
+    check("fallback count used without a detection", app.num_slots == 3 and cfg_now()["sockets"] == 3)
     app.destroy()
 
 
