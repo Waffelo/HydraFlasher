@@ -29,6 +29,13 @@ try:
 except ImportError:
     NOTIFICATIONS_AVAILABLE = False
 
+try:
+    from tkinterdnd2 import COPY, DND_FILES, TkinterDnD
+
+    DND_AVAILABLE = True
+except ImportError:
+    DND_AVAILABLE = False
+
 ctk.set_appearance_mode("dark")
 if platform.system() == "Linux":
     # The default font-glyph corner drawing looks jagged with 1px borders on Linux
@@ -82,6 +89,9 @@ SCAN_SPEED_HZ = 8_000_000
 ERASE_BLOCK = 64 * 1024  # granularity of partial writes
 BLANK_CHECK_PIECE = 1024 * 1024  # granularity of the blank check
 PARTIAL_MAX_USED = 0.9  # above this fraction of used blocks, just write everything
+# Operations whose durations are remembered for the "~… left" estimate (see _eta_keys)
+ETA_OPS = ("write", "read", "erase", "verify")
+ETA_MAX_ENTRIES = 300
 # Operations refused while a job runs or waits in the queue: operation -> reason
 QUEUE_BLOCKED = {
     "probe": "Probing is not available during queue run.",
@@ -500,6 +510,7 @@ class SocketCard(ctk.CTkFrame):
             cursor="hand2",
         )
         self._state = "unknown"
+        self._selected = False
         self._pulse = False
         self._pulse_id = None
 
@@ -574,7 +585,15 @@ class SocketCard(ctk.CTkFrame):
         self._detail_lbl.configure(text=trunc(detail, self._max_chars[1]))
 
     def set_selected(self, selected: bool):
+        self._selected = selected
         self.configure(border_color=T["accent"] if selected else T["border"])
+
+    def set_drop_hover(self, hover: bool):
+        """Highlight while a dragged file is over the card."""
+        if hover:
+            self.configure(border_color=T["green"])
+        else:
+            self.set_selected(self._selected)
 
     def set_state(
         self, state: str, name: str, detail: str, detail_color: Optional[str] = None
@@ -656,6 +675,14 @@ class HydraUI(ctk.CTk):
             and entry.get("chips")
             and not any(is_generic_chip(c) for c in entry["chips"])
         }
+        # Job signature -> typical duration in seconds (see _eta_keys)
+        self.job_times: Dict[str, float] = {
+            k: float(v)
+            for k, v in self.cfg.get("job_times", {}).items()
+            if isinstance(v, (int, float)) and v > 0
+        }
+        self._eta: Optional[float] = None  # estimate for the running job
+        self._entry: dict = {}  # queue entry of the running job
 
         self.cs_map = {f"{i + 1} (CS{i})": i for i in range(NUM_SLOTS)}
         self.cs_map[CS_ALL_LABEL] = CS_ALL
@@ -732,7 +759,9 @@ class HydraUI(ctk.CTk):
         self._log_buffer: List[Tuple[str, str]] = []
         self._log_after_id = None
 
+        self._dnd = self._load_dnd()
         self._create_ui()
+        self._register_drop_targets()
 
         self._print_welcome_message()
         self._auto_select_port(prefer=self.cfg.get("port", ""))
@@ -791,6 +820,7 @@ class HydraUI(ctk.CTk):
                 "last_dir": self.last_dir,
                 "recent_files": self.recent_files,
                 "jedec_cache": self.jedec_cache,
+                "job_times": self.job_times,
             }
         )
         try:
@@ -933,6 +963,7 @@ class HydraUI(ctk.CTk):
     def _create_ui(self):
         root = ctk.CTkFrame(self, fg_color="transparent")
         root.pack(fill="both", expand=True, padx=20, pady=(16, 10))
+        self._ui_root = root
 
         self._create_header(root)
         self._create_sockets(root)
@@ -1010,8 +1041,10 @@ class HydraUI(ctk.CTk):
         self.theme_button.configure(text=label, text_color=color)
 
     def _create_sockets(self, parent):
+        drop = " · drop an image to write" if self._dnd else ""
         self._section(
-            parent, "sockets  · live · click to select target  (alt+1…4, alt+a)"
+            parent,
+            f"sockets  · live · click to select target{drop}  (alt+1…4, alt+a)",
         )
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x")
@@ -1184,6 +1217,7 @@ class HydraUI(ctk.CTk):
     def _create_log_area(self, parent):
         panel = self._panel(parent)
         panel.pack(fill="both", expand=True)
+        self._log_panel = panel
         self.log = ctk.CTkTextbox(
             panel,
             font=self.fonts["log"],
@@ -1794,10 +1828,23 @@ class HydraUI(ctk.CTk):
         )
         sub = f" · {self._sub}" if self._sub else ""
         self.status_label.configure(text=f"{self._status}{sub}", text_color=T["accent"])
-        queued = f" · {len(self._queue)} queued" if self._queue else ""
-        self.status_meta.configure(
-            text=f"({fmt_duration(time.monotonic() - self._job_started)}{queued} · esc to stop)"
-        )
+        elapsed = time.monotonic() - self._job_started
+        left = self._eta - elapsed if self._eta else None
+        if left is None:
+            parts = [fmt_duration(elapsed)]
+        elif left >= 1:  # the line is short of space: the estimate replaces the time
+            parts = [f"~{fmt_duration(left + 0.5)} left"]
+        else:
+            parts = [f"{fmt_duration(elapsed)}, usually {fmt_duration(self._eta)}"]
+        if self._queue:
+            queued = f"{len(self._queue)} queued"
+            estimates = [self._estimate(e) for e in self._queue]
+            if self._eta and all(estimates):
+                total = max(self._eta - elapsed, 0) + sum(estimates)
+                queued += f", ~{fmt_duration(total + 0.5)} total"
+            parts.append(queued)
+        parts.append("esc to stop")
+        self.status_meta.configure(text=f"({' · '.join(parts)})")
         self._render_bar(self._pct)
         self.after(120, self._tick)
 
@@ -2278,6 +2325,8 @@ class HydraUI(ctk.CTk):
             self._job["chip"] = override
         self._job_output = []
         self._abort_requested = False
+        self._entry = entry
+        self._eta = self._estimate(entry)
         self.busy = True
         if self._prod:
             for btn in self._op_buttons:
@@ -2361,7 +2410,10 @@ class HydraUI(ctk.CTk):
         if not self._queue:
             self.stop_button.configure(state="disabled")
         self._refresh_busy_ui()
-        took = f"(took {fmt_duration(time.monotonic() - self._job_started)})"
+        secs = time.monotonic() - self._job_started
+        took = f"(took {fmt_duration(secs)})"
+        if ok and not self._abort_requested:
+            self._learn_time(self._entry, secs)
 
         text = "".join(self._job_output)
         retry = self._job.get("retry")
@@ -2400,6 +2452,58 @@ class HydraUI(ctk.CTk):
             self.notify("Failed", msg)
             self._set_led(LED["FAILED"])
         self.save_config()
+
+    # ====================== Time estimates ======================
+    def _eta_keys(self, entry: dict) -> List[str]:
+        """Signatures a job's duration is remembered under, most specific first:
+        operation, sockets, chip, image or chip size and the settings that change the
+        time. The first one also names the image file (its size and mtime), so a
+        repeated job gets its own time and a rebuilt image still gets an estimate from
+        the second. Empty when the job isn't estimated (probe) or its chips are unknown."""
+        op = entry.get("title", "").split(" ", 1)[0].lower()
+        cs, key, job = entry.get("cs"), entry.get("key", ()), entry.get("job", {})
+        if op not in ETA_OPS or cs is None:
+            return []
+        if cs < NUM_SLOTS:
+            slots, mode = [self.slots[cs]], "1"
+        else:
+            slots = self._detected_slots()
+            each = len(key) > 1 and isinstance(key[1], tuple)  # _start_write_each
+            if each:
+                slots = [self.slots[c] for c in key[1]]
+            mode = f"{'each' if each else 'all'}{len(slots)}"
+        if not slots or not all(s and s.get("detected") for s in slots):
+            return []
+        chip = "+".join(sorted({s["name"] for s in slots}))
+        size, image = slots[0].get("size_kb", 0) * 1024, ""
+        path = key[2] if len(key) > 2 and isinstance(key[2], str) else ""
+        if op in ("write", "verify") and os.path.isfile(path):
+            st = os.stat(path)
+            size, image = st.st_size, f"{os.path.basename(path)}:{int(st.st_mtime)}"
+        flags = "".join(
+            f for f, on in (
+                ("p", job.get("pico")),
+                ("b", job.get("partial")),
+                ("n", job.get("noverify")),
+            ) if on
+        )
+        base = f"{op}|{mode}|{chip}|{size}|{job.get('speed', '')}|{flags}"
+        return [f"{base}|{image}", base] if image else [base]
+
+    def _estimate(self, entry: dict) -> Optional[float]:
+        """Typical duration of this job from earlier runs, None if it never ran."""
+        for k in self._eta_keys(entry):
+            if k in self.job_times:
+                return self.job_times[k]
+        return None
+
+    def _learn_time(self, entry: dict, secs: float):
+        """Remember a successful job's duration (averaged with the earlier ones)."""
+        for k in self._eta_keys(entry):
+            old = self.job_times.pop(k, None)  # re-inserted last: newest at the end
+            self.job_times[k] = round(secs if old is None else (old + secs) / 2, 1)
+        while len(self.job_times) > ETA_MAX_ENTRIES:
+            del self.job_times[next(iter(self.job_times))]
 
     def _socket_chip(self, cs: int, identify: bool = False) -> str:
         """The -c definition for one socket (worker thread). A job's definition is
@@ -3530,21 +3634,27 @@ class HydraUI(ctk.CTk):
         if self._prod:
             self._run_batch()
             return
-        # Greyed for ALL when the chips can't be written: say why before asking for a file
-        if self._selected_cs() == CS_ALL:
-            err = self._broadcast_write_error()
-            if err and self._one_by_one():
-                self._alert("Nothing to write", err, error=True)
-                self.log_note(f"{err.splitlines()[0]}", "error")
-                return
-            if err and not self._require_same_type():
-                return
+        if not self._write_allowed():
+            return
         path = self._ask_open_file(
             "Select file to flash",
             [("Binary ROM", "*.bin *.rom"), ("All files", "*.*")],
         )
         if path:
             self._write_file(path)
+
+    def _write_allowed(self) -> bool:
+        """Write is greyed for ALL when the chips can't be written: say why (before a
+        file is asked for) and return False."""
+        if self._selected_cs() == CS_ALL:
+            err = self._broadcast_write_error()
+            if err and self._one_by_one():
+                self._alert("Nothing to write", err, error=True)
+                self.log_note(f"{err.splitlines()[0]}", "error")
+                return False
+            if err and not self._require_same_type():
+                return False
+        return True
 
     def _write_file(self, path: str):
         self._add_recent_file(path)
@@ -3935,6 +4045,76 @@ class HydraUI(ctk.CTk):
             title=f"Verify all chips against {os.path.basename(path)}",
         )
 
+    # ====================== Drag and drop ======================
+    def _load_dnd(self) -> bool:
+        """Load tkdnd into this Tk (optional tkinterdnd2 package)."""
+        if not DND_AVAILABLE:
+            return False
+        try:
+            getattr(TkinterDnD, "require", TkinterDnD._require)(self)
+            return True
+        except Exception as e:  # e.g. no tkdnd binary for this platform or Tcl version
+            print(f"Drag and drop unavailable: {e}", file=sys.stderr)
+            return False
+
+    def _register_drop_targets(self):
+        """An image dropped on a socket card is written to it, on the log it's verified
+        against the target. tkdnd looks for the nearest registered parent of the widget
+        under the pointer, so the rest of the window gets a hint instead."""
+        if not self._dnd:
+            return
+        targets = [(card, cs) for cs, card in self.cards.items()]
+        targets += [(self._log_panel, "verify"), (self._ui_root, None)]
+        for widget, target in targets:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind(
+                "<<DropEnter>>", lambda e, w=widget: self._drop_hover(w, True) or COPY
+            )
+            widget.dnd_bind("<<DropLeave>>", lambda e, w=widget: self._drop_hover(w, False))
+            widget.dnd_bind(
+                "<<Drop>>",
+                lambda e, w=widget, t=target: self._on_drop(w, t, e.data) or COPY,
+            )
+
+    def _drop_hover(self, widget, hover: bool):
+        if isinstance(widget, SocketCard):
+            widget.set_drop_hover(hover)
+        elif widget is self._log_panel:
+            widget.configure(border_color=T["green"] if hover else T["border"])
+
+    def _on_drop(self, widget, target, data: str):
+        self._drop_hover(widget, False)
+        # Not inside the tkdnd callback: the dialogs that follow would keep the file
+        # manager's drag waiting until they close
+        self.after_idle(self._handle_drop, list(self.tk.splitlist(data)), target)
+
+    def _handle_drop(self, paths: List[str], target):
+        """target: a socket (write), "verify" (verify the selected target) or None."""
+        if len(paths) != 1 or not os.path.isfile(paths[0]):
+            self.log_note("Drop a single image file.", "warning")
+            return
+        path = paths[0]
+        if target is None:
+            self.log_note(
+                "Drop the image on a socket card to write it, "
+                "or on the log to verify the target.",
+                "info",
+            )
+            return
+        if self._prod:
+            self.log_note(
+                "Production mode: the batch image is fixed, the drop is ignored.",
+                "warning",
+            )
+            return
+        self.last_dir = os.path.dirname(path)
+        if target == "verify":
+            self._verify_file(path)
+            return
+        self._select_target(target)
+        if self._write_allowed():
+            self._write_file(path)
+
     # ====================== Production mode ======================
     def _toggle_production(self):
         on = self.production_var.get()
@@ -4127,6 +4307,11 @@ class HydraUI(ctk.CTk):
             " 5. Busy? Start jobs on other sockets anyway – they queue up and run in turn",
             "dim",
         )
+        if self._dnd:
+            self.log_line(
+                " 6. Drag an image onto a socket card to write it, onto this log to verify",
+                "dim",
+            )
 
     def _on_closing(self):
         if self.busy or self._queue:

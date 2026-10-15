@@ -1,3 +1,4 @@
 customtkinter
 pyserial
 plyer  # optional: desktop notifications
+tkinterdnd2  # optional: drag and drop images onto sockets
