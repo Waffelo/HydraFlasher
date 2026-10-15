@@ -84,6 +84,7 @@ S_CMD_SET_LED = 0x20
 S_CMD_BOOTSEL = 0x21
 S_CMD_CRC32 = 0x22
 S_CMD_Q_NUM_CS = 0x23  # number of CS pins; the broadcast index is the same number
+S_CMD_Q_CS_WIRED = 0x24  # bitmap of CS lines with a pull-up (wired to a socket), fw 1.2
 
 DEFAULT_SLOTS = 4
 MAX_SLOTS = 10  # the firmware has 10 chip selects (CS0-CS9)
@@ -627,6 +628,10 @@ class Programmer:
     def num_cs(self) -> int:
         return self._cmd(S_CMD_Q_NUM_CS, nresp=1)[0]
 
+    def cs_wired(self) -> int:
+        """Bitmap of CS lines a socket board pulls up (bit n: CS n is wired)."""
+        return int.from_bytes(self._cmd(S_CMD_Q_CS_WIRED, nresp=2), "little")
+
     def pgm_name(self) -> str:
         """"HydraFlasher <version>" from firmware 1.1 on, "pico-serprog" before."""
         name = self._cmd(S_CMD_Q_PGMNAME, nresp=16).split(b"\0")[0]
@@ -923,9 +928,32 @@ class HydraUI(ctk.CTk):
                 f"{MAX_SLOTS} – using {DEFAULT_SLOTS}."
             )
             sockets = DEFAULT_SLOTS
+        # "sockets" is the manual count; with sockets_auto the count comes from the
+        # firmware's wiring detection (S_CMD_Q_CS_WIRED), the manual one otherwise.
+        # The last detected count is used at start, so the cards don't jump.
+        self.manual_sockets: int = sockets
+        self.sockets_auto: bool = self.cfg.get("sockets_auto", True) is not False
+        detected = self.cfg.get("sockets_detected")
+        self.sockets_detected: Optional[int] = (
+            detected
+            if isinstance(detected, int) and not isinstance(detected, bool)
+            and 1 <= detected <= MAX_SLOTS
+            else None
+        )
+        if self.sockets_auto and self.sockets_detected:
+            sockets = self.sockets_detected
         self.num_slots: int = sockets
         # One socket: no ALL card/target, a broadcast would only reach that chip anyway
         self.has_all = sockets > 1
+        # Wired CS lines reported by the firmware (bitmap), None: not known or the
+        # firmware can't tell; _sockets_pending: apply the count once idle
+        self._wired: Optional[int] = None
+        self._sockets_pending = False
+        # The last detection result logged (kept across reconnects, so a replugged
+        # board doesn't log the same wiring again), and whether auto switched itself
+        # to manual because no pull-ups were found
+        self._wired_logged: Optional[int] = None
+        self._auto_fell_back = False
 
         self._build_cs_map()
 
@@ -1086,6 +1114,31 @@ class HydraUI(ctk.CTk):
         """A socket name as stored: one line, single spaces, at most 16 characters."""
         return " ".join(str(name or "").split())[:SOCKET_NAME_MAX]
 
+    def _socket_unavailable(self, cs: int) -> str:
+        """Why socket cs can't be used, "" if it can (also from worker threads)."""
+        if self._fw_cs is not None and cs >= self._fw_cs:
+            return "no CS line in firmware"
+        if self.sockets_auto and self._wired and not self._wired >> cs & 1:
+            return "not wired"
+        return ""
+
+    def _usable_sockets(self) -> List[int]:
+        return [cs for cs in range(self.num_slots) if not self._socket_unavailable(cs)]
+
+    def _auto_count(self) -> Optional[int]:
+        """Socket count from the detected wiring: up to the highest wired CS line."""
+        return self._wired.bit_length() if self._wired else None
+
+    @staticmethod
+    def _wired_text(bits: int) -> str:
+        """"CS0–CS3", or "CS0, CS1, CS3 (CS2 not wired)" with gaps."""
+        wired = [cs for cs in range(bits.bit_length()) if bits >> cs & 1]
+        missing = [cs for cs in range(bits.bit_length()) if not bits >> cs & 1]
+        if not missing:
+            return "CS0" if len(wired) == 1 else f"CS0–CS{wired[-1]}"
+        gap = ", ".join(f"CS{cs}" for cs in missing)
+        return ", ".join(f"CS{cs}" for cs in wired) + f" ({gap} not wired)"
+
     def _sock(self, cs: int) -> str:
         """How a socket is named in the log and in messages: "CS1 EC", or "CS1"."""
         name = self.socket_names[cs] if 0 <= cs < len(self.socket_names) else ""
@@ -1152,7 +1205,9 @@ class HydraUI(ctk.CTk):
                 "recent_files": self.recent_files,
                 "jedec_cache": self.jedec_cache,
                 "job_times": self.job_times,
-                "sockets": self.num_slots,
+                "sockets": self.manual_sockets,
+                "sockets_auto": self.sockets_auto,
+                "sockets_detected": self.sockets_detected,
             }
         )
         try:
@@ -1813,8 +1868,11 @@ class HydraUI(ctk.CTk):
             broadcast_busy = (
                 CS_ALL in self._busy_sockets and slot is not None and slot["detected"]
             )
-            if self._fw_cs is not None and cs >= self._fw_cs:
-                card.set_state("fail", "—", "no CS line in firmware", T["red"])
+            reason = self._socket_unavailable(cs)
+            if reason == "not wired":
+                card.set_state("unknown", "—", "not wired")
+            elif reason:
+                card.set_state("fail", "—", reason, T["red"])
             elif cs in self._busy_sockets or broadcast_busy:
                 card.set_state("busy", name, "working…", T["accent"])
             elif cs in queued:
@@ -1898,6 +1956,7 @@ class HydraUI(ctk.CTk):
         self._fw_caps = None
         self._fw_cs = None
         self._fw_name = None
+        self._wired = None
         self._refresh_sockets()
         self._refresh_settings()
 
@@ -2031,15 +2090,15 @@ class HydraUI(ctk.CTk):
                             prog.num_cs() if S_CMD_Q_NUM_CS in caps else LEGACY_CS_PINS
                         )
                         name = prog.pgm_name() if S_CMD_Q_PGMNAME in caps else ""
+                        wired = prog.cs_wired() if S_CMD_Q_CS_WIRED in caps else None
                         self._fw_caps, self._fw_cs, self._fw_name = caps, fw_cs, name
-                        self.after(0, self._on_fw_cs)
+                        self.after(0, self._on_fw_cs, wired)
                     if chips:
                         prog.set_speed(hz)
-                        # Sockets past the firmware's CS lines would be refused (NAK)
-                        fw_cs = self._fw_cs or MAX_SLOTS
+                        # Not past the firmware's CS lines (they'd be NAKed), not
+                        # the sockets detected as not wired
                         results = [
-                            prog.identify(cs)
-                            for cs in range(min(self.num_slots, fw_cs))
+                            (cs, prog.identify(cs)) for cs in self._usable_sockets()
                         ]
                         prog.pins(False)
                 finally:
@@ -2056,8 +2115,14 @@ class HydraUI(ctk.CTk):
             self.after(0, self._clear_unresponsive, port)
         self.after(0, self._apply_scan, results)
 
-    def _on_fw_cs(self):
-        """The firmware's CS count is known (first scan after connecting)."""
+    def _on_fw_cs(self, wired: Optional[int] = None):
+        """The firmware's CS count (and wiring) are known (first scan after
+        connecting)."""
+        self._set_wired(wired)
+        self._warn_fw_cs()
+
+    def _warn_fw_cs(self):
+        """Warn when more sockets are shown than the firmware has CS lines for."""
         if self._fw_cs is not None and self.num_slots > self._fw_cs:
             self.log_note(
                 f"The programmer's firmware has {self._fw_cs} CS lines, but "
@@ -2067,6 +2132,90 @@ class HydraUI(ctk.CTk):
             )
         self._refresh_sockets()
         self._refresh_settings()
+
+    def _set_wired(self, wired: Optional[int], explicit: bool = False):
+        """New wiring detection result (on connect, or explicit: detect again).
+        No pull-ups found switches auto to manual, so a board without them (or with
+        flaky wiring) doesn't make the count change at every reconnect; only detect
+        again switches back to auto when it finds them. A result is logged only when
+        it differs from the last one."""
+        self._wired = wired
+        if wired and wired != self._wired_logged:  # "none" has its own warning
+            self._wired_logged = wired
+            self.log_note(f"Sockets wired: {self._wired_text(wired)}", "info")
+        if wired:
+            for cs in range(self.num_slots):  # forget chips seen on unwired lines
+                if not wired >> cs & 1:
+                    self.slots[cs] = None
+                    self._socket_ident[cs] = _UNSCANNED
+            if explicit and not self.sockets_auto:
+                self.sockets_auto, self._auto_fell_back = True, False
+                self.save_config()
+                self.log_note("Pull-up resistors found: socket count back to auto", "info")
+        elif wired == 0 and self.sockets_auto:
+            self.sockets_auto, self._auto_fell_back = False, True
+            self.save_config()
+            self.log_note(
+                "No pull-up resistors found on the CS lines: socket count switched to "
+                f"manual ({self.manual_sockets}). Add a 10 kΩ from each /CS to 3V3, "
+                "then settings → sockets → detect again.",
+                "warning",
+            )
+        elif wired == 0 and explicit:
+            self.log_note(
+                "No wired sockets detected (no pull-ups on the CS lines).", "warning"
+            )
+        self._apply_auto_sockets()
+        self._refresh_sockets()
+        self._refresh_settings()
+
+    def _apply_auto_sockets(self):
+        """Show the count of the current mode: in auto the detected one (or the
+        manual one without a detection), in manual the manual one. Waits while jobs
+        run or wait (_finish_job applies it)."""
+        detected = self._auto_count() if self.sockets_auto else None
+        if detected and detected != self.sockets_detected:
+            self.sockets_detected = detected
+            self.save_config()
+        n = detected or self.manual_sockets
+        if n == self.num_slots:
+            self._sockets_pending = False
+            return
+        if self.busy or self._queue or self._prod:
+            self._sockets_pending = True
+            return
+        self._sockets_pending = False
+        why = "detected" if detected else ("" if self.sockets_auto else "manual")
+        self._set_socket_count(n, why)
+
+    def _detect_sockets(self):
+        """Ask the firmware again which CS lines are wired (settings button)."""
+        port = self.port_entry.get().strip()
+        if self.busy or self._queue:
+            self.log_note("Sockets can't be detected while jobs run or wait.", "warning")
+            return
+        if not (self._port_connected and port) or self._is_unresponsive(port):
+            self.log_note("No programmer to detect sockets with.", "warning")
+            return
+        if self._fw_caps is not None and S_CMD_Q_CS_WIRED not in self._fw_caps:
+            self.log_note(
+                "This firmware can't detect sockets: it needs version 1.2 "
+                "(settings → firmware).",
+                "warning",
+            )
+            return
+
+        def work():
+            try:
+                with self._programmer(port) as prog:
+                    caps = self._fw_caps or prog.command_map()
+                    wired = prog.cs_wired() if S_CMD_Q_CS_WIRED in caps else None
+            except Exception as e:
+                self.after(0, self.log_note, f"Socket detection failed: {e}", "error")
+                return
+            self.after(0, self._set_wired, wired, True)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _slot_from_ident(self, cs: int, ident: tuple) -> dict:
         jedec, uid = ident
@@ -2113,9 +2262,10 @@ class HydraUI(ctk.CTk):
         unknown = []  # sockets that got a chip flashprog hasn't identified yet
         override = self.chip_override.get()
         misfit = []  # sockets that got a known chip the override isn't a definition of
-        for cs, ident in enumerate(results):
-            if cs >= self.num_slots:  # the socket count was lowered meanwhile
-                break
+        for cs, ident in results:
+            # The count was lowered, or the line found unwired, since the scan began
+            if cs >= self.num_slots or self._socket_unavailable(cs):
+                continue
             prev = self._socket_ident[cs]
             if ident == prev:
                 continue
@@ -2764,9 +2914,15 @@ class HydraUI(ctk.CTk):
             self.log_note("Another operation is still running.", "warning")
             return False
         title = title or status.rstrip("…")
-        if cs is not None and cs < self.num_slots and self._fw_cs is not None and (
-            cs >= self._fw_cs
-        ):
+        reason = self._socket_unavailable(cs) if cs is not None and cs < self.num_slots else ""
+        if reason == "not wired":
+            self.log_note(
+                f"{self._sock(cs)} isn't wired (no pull-up detected) – if it is, set "
+                "the socket count by hand in settings.",
+                "error",
+            )
+            return False
+        if reason:
             self.log_note(
                 f"{self._sock(cs)} has no CS line in the programmer's firmware "
                 f"({self._fw_cs} lines) – update the firmware.",
@@ -2825,7 +2981,7 @@ class HydraUI(ctk.CTk):
             "broadcast": self._fw_cs or MAX_SLOTS,
             # Sockets the firmware has a CS line for (on old firmware CS6 is the
             # broadcast, so a probe of "socket 7" would read every chip at once)
-            "usable": min(self.num_slots, self._fw_cs or MAX_SLOTS),
+            "usable": self._usable_sockets(),
         }
         entry = {
             "status": status,
@@ -2941,6 +3097,8 @@ class HydraUI(ctk.CTk):
     def _finish_job(self, ok: bool, msg: str):
         self._report_job(ok, msg)
         self._queue_continue()
+        if self._sockets_pending and not (self.busy or self._queue):
+            self._apply_auto_sockets()
 
     def _report_job(self, ok: bool, msg: str):
         self.busy = False
@@ -3561,7 +3719,11 @@ class HydraUI(ctk.CTk):
         return tuple((d["cs"], d["size_kb"]) for d in slots if d and d["detected"])
 
     def _detected_slots(self) -> List[dict]:
-        return [d for d in self.slots if d and d["detected"]]
+        """Sockets holding a chip (not the unwired ones or those without a CS line)."""
+        return [
+            d for d in self.slots
+            if d and d["detected"] and not self._socket_unavailable(d["cs"])
+        ]
 
     def _unsupported_msg(self, cs: int) -> str:
         return (
@@ -3613,7 +3775,7 @@ class HydraUI(ctk.CTk):
     def _probe_all_sockets(self) -> List[dict]:
         """Worker thread: probe every socket one by one, return the detected ones."""
         first_output = ""
-        for cs in range(self._job["usable"]):
+        for cs in self._job["usable"]:
             self.after(0, self.update_progress, f"{self._sock(cs)}")
             _, text = self._exec([], cs, silent=True)
             first_output = first_output or text
@@ -4676,12 +4838,24 @@ class HydraUI(ctk.CTk):
         panel = self._panel(body)
         panel.pack(fill="x")
         row = self._settings_row(panel, "sockets")
-        self._sockets_var = ctk.StringVar(value=str(self.num_slots))
-        combo = self._combo(
-            row, [str(n) for n in range(1, MAX_SLOTS + 1)], self._sockets_var, 70
-        )
+        counts = [str(n) for n in range(1, MAX_SLOTS + 1)]
+        self._sockets_var = ctk.StringVar(value="auto")
+        combo = self._combo(row, ["auto"] + counts, self._sockets_var, 80)
         combo.configure(command=self._on_sockets_choice)
-        combo.pack(side="left")
+        combo.pack(side="left", padx=(12, 0))
+        # Auto only: the count to use when nothing is detected
+        self._fallback_box = ctk.CTkFrame(row, fg_color="transparent")
+        ctk.CTkLabel(
+            self._fallback_box, text="otherwise", font=self.fonts["normal"],
+            text_color=T["dim"],
+        ).pack(side="left", padx=(12, 6))
+        self._fallback_var = ctk.StringVar(value=str(self.manual_sockets))
+        fallback = self._combo(self._fallback_box, counts, self._fallback_var, 70)
+        fallback.configure(command=self._on_fallback_choice)
+        fallback.pack(side="left")
+        self._button(row, "detect again", self._detect_sockets, width=120).pack(
+            side="right"
+        )
         w["sockets"] = self._settings_note(row)
         row = self._settings_row(panel, "socket names")
         self._names_frame = ctk.CTkFrame(row, fg_color="transparent")
@@ -4816,9 +4990,15 @@ class HydraUI(ctk.CTk):
         home = os.path.expanduser("~")
         idle = not (self.busy or self._queue or self._prod)
         self._sockets_var.set(str(self.num_slots))
-        lines = "CS0" if self.num_slots == 1 else f"CS0–CS{self.num_slots - 1}"
+        self._sockets_var.set("auto" if self.sockets_auto else str(self.num_slots))
+        self._fallback_var.set(str(self.manual_sockets))
+        if self.sockets_auto:
+            self._fallback_box.pack(side="left", before=w["sockets"])
+        else:
+            self._fallback_box.pack_forget()
         w["sockets"].configure(
-            text=lines + ("" if idle else " · can't change while jobs run or wait")
+            text=self._sockets_summary()
+            + ("" if idle else " · can't change while jobs run or wait")
         )
         if self._names_for != self.num_slots:
             self._build_name_fields()
@@ -4957,12 +5137,50 @@ class HydraUI(ctk.CTk):
             T["yellow"],
         )
 
+    def _sockets_summary(self) -> str:
+        """The socket count's source, for the settings page."""
+        lines = "CS0" if self.num_slots == 1 else f"CS0–CS{self.num_slots - 1}"
+        if not self.sockets_auto:
+            why = " (no pull-ups found)" if self._auto_fell_back else ""
+            return f"manual{why} · {lines}"
+        if self._wired:
+            return f"detected {self._wired_text(self._wired)}"
+        if self._fw_caps is None:
+            last = " (as last detected)" if self.sockets_detected else ""
+            return f"not detected yet · {lines}{last}"
+        if S_CMD_Q_CS_WIRED not in self._fw_caps:
+            why = "the firmware can't detect (needs 1.2)"
+        else:
+            why = "nothing detected (no pull-ups on CS)"
+        return f"{why} · using {self.num_slots}"
+
     def _on_sockets_choice(self, value: str):
-        if not self._set_socket_count(int(value)):
-            self._sockets_var.set(str(self.num_slots))
+        if value == "auto":
+            if not self.sockets_auto:
+                self.sockets_auto, self._auto_fell_back = True, False
+                self.save_config()
+                self.log_note("Socket count: auto (detected wiring)", "info")
+                self._apply_auto_sockets()
+                self._refresh_sockets()  # gaps count again
+        else:
+            n = int(value)
+            if self._set_socket_count(n, "manual"):
+                was_auto = self.sockets_auto
+                self.sockets_auto, self.manual_sockets = False, n
+                self._auto_fell_back = False
+                self.save_config()
+                if was_auto:
+                    self._refresh_sockets()  # "not wired" sockets are usable again
         self._refresh_settings()
 
-    def _set_socket_count(self, n: int) -> bool:
+    def _on_fallback_choice(self, value: str):
+        """The count auto mode uses when nothing is detected."""
+        self.manual_sockets = int(value)
+        self.save_config()
+        self._apply_auto_sockets()
+        self._refresh_settings()
+
+    def _set_socket_count(self, n: int, why: str = "") -> bool:
         """Change the number of sockets now: cards, targets, shortcuts and per-socket
         state follow. Only while no job runs or waits (jobs refer to socket numbers)."""
         if n == self.num_slots:
@@ -4995,9 +5213,9 @@ class HydraUI(ctk.CTk):
         self._register_drop_targets()
         self._refresh_sockets()
         self.save_config()
-        self.log_note(f"Socket count: {n}", "info")
+        self.log_note(f"Socket count: {n}" + (f" ({why})" if why else ""), "info")
         if self._fw_cs is not None and n > self._fw_cs:
-            self._on_fw_cs()  # warns that the firmware has fewer CS lines
+            self._warn_fw_cs()
         return True
 
     def _load_binary_version(self):
@@ -5437,6 +5655,8 @@ class HydraUI(ctk.CTk):
                 "soft",
             )
             self._update_footer()
+            if self._sockets_pending:
+                self._apply_auto_sockets()
             return
         if self.busy or self._queue:
             self.log_note("Wait for the running/queued jobs first.", "warning")
