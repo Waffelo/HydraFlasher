@@ -12,6 +12,7 @@ import threading
 import time
 import tkinter
 import tkinter.font
+import urllib.request
 import zlib
 import base64
 from contextlib import contextmanager
@@ -73,11 +74,13 @@ MAX_LOG_LINES = 5000
 # serprog commands used directly (see firmware serprog.h)
 S_ACK = 0x06
 S_CMD_Q_CMDMAP = 0x02
+S_CMD_Q_PGMNAME = 0x03
 S_CMD_O_SPIOP = 0x13
 S_CMD_S_SPI_FREQ = 0x14
 S_CMD_S_PIN_STATE = 0x15
 S_CMD_S_SPI_CS = 0x16
 S_CMD_SET_LED = 0x20
+S_CMD_BOOTSEL = 0x21
 S_CMD_CRC32 = 0x22
 S_CMD_Q_NUM_CS = 0x23  # number of CS pins; the broadcast index is the same number
 
@@ -103,11 +106,21 @@ ETA_MAX_ENTRIES = 300
 # Operations refused while a job runs or waits in the queue: operation -> reason
 QUEUE_BLOCKED = {
     "probe": "Probing is not available during queue run.",
+    "firmware": "The firmware can only be updated while no job runs or waits.",
 }
 
 # Must match the firmware's USB descriptors (usb_descriptors.c)
 HYDRA_VID = 0xCAFE
 PICO_VID = 0x2E8A
+
+# Firmware updates: GitHub Releases tagged fw-v<version> carry the .uf2 (CI builds them)
+GITHUB_REPO = "Waffelo/HydraFlasher"
+FW_TAG_PREFIX = "fw-v"
+FW_NAME_PREFIX = "HydraFlasher "  # S_CMD_Q_PGMNAME of firmware 1.1+ ("pico-serprog" before)
+FW_VERSION_RE = re.compile(rb"HydraFlasher (\d+\.\d+)")
+UF2_MAGIC = (0x0A324655, 0x9E5D5157, 0x0AB16F30)  # start 0, start 1, end
+UF2_FAMILY_RP2040 = 0xE48BFF56
+RP2_LABEL = "RPI-RP2"  # the Pico bootloader's drive
 
 FOUND_RE = re.compile(r'Found (.*?)\s*flash chip "([^"]+)" \((\d+) kB')
 MULTI_MATCH = "Multiple flash chip definitions match"
@@ -281,6 +294,8 @@ THEME_ICONS = {  # (icon, scale): (size, base64 of zlib'd 8-bit alpha mask)
     ("sun", 1): (18, "eNplUDsOgzAMfXGQx8A5kbgJ3IEhEjsSF6BbK4FADB3pLSrUyE1IltLnwX6Jf8+A1gqKnw94pzUiCLm7gVQilfWRkcWHylYgjU5aznjos4xb6aAVnf5E+POl3mxZ1PNUF6U9KaDBq3isDKLYnhp5O/eWhgKb9lfPq3Mizq3c38ft92U4jv1SZcy1c0hI06c5TveL/22YVGT9wElFVEpYxCAqPdMVYfzkiSBcTClsO3sXLvYFvw1kgw=="),
     ("sun", 2): (36, "eNqNVLFKA0EQnZ1dUhgljaXYmoSAheA3pPIH7FJqLQS08EMMp7VKClGQXFybFIL24kdYmCLCJXnO3W3u9oyGGzj27u1jZm5m3hD5puloPj+WY4UxPQNPciybNrzgDIFLMu7L5A6VexwncJwcjs92dyv1zxQCFymHaavbdiRNbeBjIyEx2en0JsmZaeMDaKf5GzrHF+xaTNJ0B9zHONOaFfjc+VTb7/iGXRe/rJqjUVOxvK5bAd+3Fbt8ahYTvG0qlXrWpNTmm0C2liWd+B2jQxWHqAp1BEjjZ6TqKz4bEnr/pNc72ZckG594rRaKyVQ73CHaHSCxwS7RzmHtV72TIAdjzCKxGcYH5BUwI1V0a4Io9RNh0tKVjKLZGKM1J+10lJj0LABrHV+afCr2MENmM+zlE3L8eBUE1/06U3ce5Zxo3iWu96+DIHg4c9gLUwCfI93nFxRsJedoEA7D8PbvWLehXA5Oy+SsObb//j25NGVqWL4XJXpaYjZKzFiJWS0z80Xt3AN3y9rxNajpZjq1To6eBn0tG7oAwoWucy374jfSfQyJl3aCt1sKnMJu8feYVNr+uaM8jgzmKZki+gMu9IBT"),
     ("moon", 1): (18, "eNpVkC0OwlAQhHe3BY/Av4JGIxANGkmCqOcC3ICDEOAwpAYLghtgKjDQvvYNW/pHR22+7M/MEqk8pr6EaDrnjmoZXd5r8logcgTOHdCRE9JiIS3xaYMUrzG1a4SvhUUy6ggZC+fcjKUlSxSw2NOgR5xLAhoK6916SuHN/G/Ooei5C3yZrDwur2coET6PO7Zqp3SY5Q7OutK6NClQaBMOLFwnjVMgjSNqHqCdJgzNr6hVfYyrsF+gm1vf"),
+    ("gear", 1): (18, "eNptUDEOhEAIZMHEN+hjTKxs/IN21/ikvc4nmGws9lo/YeIv9E4J3G5yjdmjAIYAwwAAiATV41EBIUK06MmpOvoBhG4qYGFeoJi6ANH0l272EDnspldvkNDrR1WYRUPikSgrV+FTg50sa5nFbVZPdW3rQrAB1qPfWeZIOgvvfqyH0M7amDw3TUhUh7Ryn3q/xvq++Rnvv7MXGaUXpipSpX++kXzsC/W3nXA="),
+    ("gear", 2): (36, "eNqVVMGKwjAQnTRtT9496UX05tF7ERQEvXrzol/gBxQR/SWFzU0Q/0HZTxARirjaJrOTpNZdWDQ7BDqdeXmTl0kC8D/zoCrEx4cQVXL/SDOKcmijsTa5NvSLQSN8GGZfGY0huTwPP8yHjqiBH/hTTJHGlFyoiQ4lnpAoweMAGCwsZkHu4IhJVIA8iC54R4zL44OSiFIdxuUYKXSJ8nIe6yYoUSGesDByFQWTrl245+00CxJFpixCZUSGmmnnWQw0TlKa1JPHuFKeGnkxDn07zTCkacEmsW+2wOqaEbuZiT8+mZrluhjnQVg6G3aJ9/Vyub4bkMJzKQw4ZznTCDMD2TT1X3NjQBmObJZVWr1JvNfBDLchcN/nEG71HIn7eNJrVRiIQoq61iHQ8wKoX1UhUgAIdUtTS716qOCwssXT9KY0Bq0katOc5e3x2Vw3zohDV4xTrbdrfqn9M9fusIeuvXjbU6ez4XLGnM6qw5l3uTtOd9DpLju9CU5vi9Mb9dK+Ab+LbzI="),
     ("moon", 2): (36, "eNqVlLFKA0EQhmf31soQlKQIaFJZWNjYWYmlksZHECFJEUwRrGyinY/gY1ikEyFiaaFFioCQTlAwBISASW53nN3LJpdk9yQDVxz33T//zswOwKrBA8ETASbYfxoBPYWTy2PwKjEG6crTD77nuU+N/i11EbG37ZUJIHuPOB5iHYRXJdfGkVT4lfJl4jxDCOngnVcmgKZGMMRTJnzIuUEUql2PY8ZSH1Iapp8Btx0BZXJimN6Gh+HwrMKIGRbcuRhs/dJnHRIPTUccjotoZPTZr9xnF1CL7GidV8bdzLVlCDpyJoszIb44hyiWS0O3sMaSPBvbdRrY+FQtnF3XKMQbKpngjIKLpRpa6PFglmWHzfdi6gkfyntpxjb3a28XUcGmPY1BiJ+dzjdif33iyM5GjIpyj/BsWi47Y7FQSsohNmcVtbM6HyNsZzhfnPk4IQnJzU3K5O6EyhaADnqfXeidvYPhmEI77pZgad7MXW4NIp1Bq5K2fVjaCflitdGoFvOT18TdkrRmaEdRBHzl5QZ/7x1wRw=="),
 }
 
@@ -390,6 +405,126 @@ def ranges_size(ranges: Sequence[Range]) -> int:
     return sum(e - s for s, e in ranges)
 
 
+def read_uf2(path: str) -> dict:
+    """Check that a .uf2 file is an image for the Pico (RP2040) and find the
+    HydraFlasher version in it ("HydraFlasher x.y", the S_CMD_Q_PGMNAME answer).
+    Returns {"blocks": n, "version": "x.y" or None}; ValueError says what's wrong."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if not data or len(data) % 512:
+        raise ValueError("not a UF2 file (its size isn't a multiple of 512 bytes)")
+    payload = bytearray()
+    for off in range(0, len(data), 512):
+        m0, m1, flags, _addr, size, _no, _count, family = struct.unpack_from(
+            "<8I", data, off
+        )
+        (m_end,) = struct.unpack_from("<I", data, off + 508)
+        if (m0, m1, m_end) != UF2_MAGIC or size > 476:
+            raise ValueError("not a UF2 file (bad block header)")
+        if flags & 0x2000 and family != UF2_FAMILY_RP2040:  # family ID present
+            raise ValueError(
+                f"made for another chip (UF2 family 0x{family:08x}, not the RP2040)"
+            )
+        payload += data[off + 32 : off + 32 + size]
+    m = FW_VERSION_RE.search(bytes(payload))
+    return {"blocks": len(data) // 512, "version": m.group(1).decode() if m else None}
+
+
+def fw_version(name: Optional[str]) -> Optional[str]:
+    """"1.1" from "HydraFlasher 1.1"; None for older firmware ("pico-serprog")."""
+    if name and name.startswith(FW_NAME_PREFIX):
+        return name[len(FW_NAME_PREFIX) :].strip() or None
+    return None
+
+
+def version_key(version: str) -> Tuple[int, ...]:
+    try:
+        return tuple(int(x) for x in version.split("."))
+    except ValueError:
+        return (0,)
+
+
+def latest_fw_release(timeout: float = 10) -> Optional[dict]:
+    """The newest firmware release on GitHub that has a .uf2 attached, None if there
+    is none. Raises OSError (urllib) or ValueError when GitHub can't be asked."""
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=30",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "HydraFlasher"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        releases = json.load(resp)
+    best = None
+    for r in releases:
+        tag = r.get("tag_name") or ""
+        if r.get("draft") or r.get("prerelease") or not tag.startswith(FW_TAG_PREFIX):
+            continue
+        asset = next(
+            (a for a in r.get("assets") or [] if a.get("name", "").endswith(".uf2")),
+            None,
+        )
+        if not asset:
+            continue
+        rel = {
+            "version": tag[len(FW_TAG_PREFIX) :],
+            "tag": tag,
+            "name": asset["name"],
+            "url": asset["browser_download_url"],
+            "size": asset.get("size") or 0,
+            "date": (r.get("published_at") or "")[:10],
+        }
+        if best is None or version_key(rel["version"]) > version_key(best["version"]):
+            best = rel
+    return best
+
+
+def find_rp2_drive(mount: bool = True) -> Optional[str]:
+    """Where the Pico's bootloader drive (RPI-RP2) is mounted, None while there's
+    none. On Linux it's mounted with udisksctl when the desktop doesn't do it."""
+    system = platform.system()
+    roots: List[str] = []
+    if system == "Windows":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        drives = kernel32.GetLogicalDrives()
+        for i in range(26):
+            root = f"{chr(65 + i)}:\\"
+            if drives >> i & 1 and kernel32.GetDriveTypeW(root) == 2:  # removable
+                roots.append(root)
+    elif system == "Darwin":
+        roots.append(f"/Volumes/{RP2_LABEL}")
+    else:
+        try:
+            out = subprocess.run(
+                ["findmnt", "-rn", "-S", f"LABEL={RP2_LABEL}", "-o", "TARGET"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            roots += [line.replace("\\x20", " ") for line in out.splitlines() if line]
+        except (OSError, subprocess.SubprocessError):
+            pass
+        dev = f"/dev/disk/by-label/{RP2_LABEL}"
+        if not roots and mount and os.path.exists(dev):
+            try:
+                out = subprocess.run(
+                    ["udisksctl", "mount", "--no-user-interaction", "-b",
+                     os.path.realpath(dev)],
+                    capture_output=True, text=True, timeout=15,
+                ).stdout
+                m = re.search(r" at (.+?)\.?$", out.strip())
+                if m:
+                    roots.append(m.group(1))
+            except (OSError, subprocess.SubprocessError):
+                pass
+    for root in roots:
+        try:
+            with open(os.path.join(root, "INFO_UF2.TXT"), errors="replace") as f:
+                if f"Board-ID: {RP2_LABEL}" in f.read():
+                    return root
+        except OSError:
+            continue
+    return None
+
+
 class JobAborted(Exception):
     pass
 
@@ -432,6 +567,15 @@ class Programmer:
 
     def num_cs(self) -> int:
         return self._cmd(S_CMD_Q_NUM_CS, nresp=1)[0]
+
+    def pgm_name(self) -> str:
+        """"HydraFlasher <version>" from firmware 1.1 on, "pico-serprog" before."""
+        name = self._cmd(S_CMD_Q_PGMNAME, nresp=16).split(b"\0")[0]
+        return name.decode("ascii", "replace").strip()
+
+    def bootsel(self):
+        """Reboot into the USB bootloader (the RPI-RP2 drive)."""
+        self._cmd(S_CMD_BOOTSEL)
 
     def set_speed(self, hz: int):
         self._cmd(S_CMD_S_SPI_FREQ, struct.pack("<I", hz), 4)
@@ -711,10 +855,7 @@ class HydraUI(ctk.CTk):
         # One socket: no ALL card/target, a broadcast would only reach that chip anyway
         self.has_all = sockets > 1
 
-        self.cs_map = {f"{i + 1} (CS{i})": i for i in range(self.num_slots)}
-        if self.has_all:
-            self.cs_map[CS_ALL_LABEL] = CS_ALL
-        self.cs_labels = {v: k for k, v in self.cs_map.items()}
+        self._build_cs_map()
 
         cs_display = self.cfg.get("cs", "1 (CS0)")
         if cs_display == CS_ALL_LABEL_OLD:
@@ -738,6 +879,13 @@ class HydraUI(ctk.CTk):
         self._fw_caps: Optional[Set[int]] = None
         # CS lines of the connected firmware (None: not asked yet, e.g. under sudo)
         self._fw_cs: Optional[int] = None
+        self._fw_name: Optional[str] = None  # its S_CMD_Q_PGMNAME answer
+        # Settings page; the newest firmware release on GitHub (see _check_release)
+        self._settings_open = False
+        self._settings_view = None
+        self._release: Optional[dict] = None
+        self._release_checking = False
+        self._binary_version = ""
         self._scan_running = False
         self._log_lock = threading.Lock()
 
@@ -780,6 +928,7 @@ class HydraUI(ctk.CTk):
         self.partial_var = ctk.BooleanVar(value=self.cfg.get("partial_write", True))
         self.production_var = ctk.BooleanVar(value=False)
         self.one_by_one_var = ctk.BooleanVar(value=self.cfg.get("one_by_one", False))
+        self.notify_var = ctk.BooleanVar(value=self.cfg.get("notifications", True))
         self.spispeed_var = ctk.StringVar(
             value=spispeed if spispeed in SPI_SPEEDS else "16M"
         )
@@ -816,17 +965,37 @@ class HydraUI(ctk.CTk):
         }
         for key, fn in shortcuts.items():
             self.bind(key, lambda e, fn=fn: self._shortcut(fn))
+        self._bind_socket_keys()
+        self.bind("<Control-l>", lambda e: self._clear_log())
+        self.bind("<Control-q>", lambda e: self._on_closing())
+        self.bind("<Control-comma>", lambda e: self._toggle_settings())
+        # Esc stops jobs; with none running it leaves the settings page
+        self.bind(
+            "<Escape>",
+            lambda e: self._close_settings()
+            if self._settings_open and not (self.busy or self._queue)
+            else self.stop(),
+        )
+        # Clicking anywhere outside a text field releases focus so shortcuts work again
+        self.bind("<Button-1>", self._drop_focus, add="+")
+
+    def _build_cs_map(self):
+        """Target menu labels -> socket (or CS_ALL) for the current socket count."""
+        self.cs_map = {f"{i + 1} (CS{i})": i for i in range(self.num_slots)}
+        if self.has_all:
+            self.cs_map[CS_ALL_LABEL] = CS_ALL
+        self.cs_labels = {v: k for k, v in self.cs_map.items()}
+
+    def _bind_socket_keys(self):
+        """Alt+1…9 (Alt+0 for socket 10) and Alt+A, for the current socket count."""
+        for key in [str(k) for k in range(10)] + ["a"]:
+            self.unbind(f"<Alt-Key-{key}>")
         for i in range(self.num_slots):
             # Number row: socket 10 is Alt+0
             key = (i + 1) % 10
             self.bind(f"<Alt-Key-{key}>", lambda e, cs=i: self._select_target(cs))
         if self.has_all:
             self.bind("<Alt-Key-a>", lambda e: self._select_target(CS_ALL))
-        self.bind("<Control-l>", lambda e: self._clear_log())
-        self.bind("<Control-q>", lambda e: self._on_closing())
-        self.bind("<Escape>", lambda e: self.stop())
-        # Clicking anywhere outside a text field releases focus so shortcuts work again
-        self.bind("<Button-1>", self._drop_focus, add="+")
 
     # ====================== Config & Binary ======================
     def load_config(self) -> dict:
@@ -851,6 +1020,7 @@ class HydraUI(ctk.CTk):
                 "fast_verify": self.fast_verify_var.get(),
                 "partial_write": self.partial_var.get(),
                 "one_by_one": self.one_by_one_var.get(),
+                "notifications": self.notify_var.get(),
                 "theme": self.theme,
                 "spispeed": self.spispeed_var.get(),
                 "cs": self.cs_display_var.get(),
@@ -1004,9 +1174,14 @@ class HydraUI(ctk.CTk):
         self._ui_root = root
 
         self._create_header(root)
-        self._create_sockets(root)
-        self._create_settings(root)
-        self._create_actions(root)
+        # Swapped with the settings page; status line, log and footer stay below both
+        self._top_view = ctk.CTkFrame(root, fg_color="transparent")
+        self._top_view.pack(fill="x")
+        self._sockets_box = ctk.CTkFrame(self._top_view, fg_color="transparent")
+        self._sockets_box.pack(fill="x")
+        self._create_sockets(self._sockets_box)
+        self._create_settings(self._top_view)
+        self._create_actions(self._top_view)
         self._create_status_line(root)
         self._create_log_area(root)
         self._create_footer(root)
@@ -1038,12 +1213,13 @@ class HydraUI(ctk.CTk):
             font=self.fonts["title"],
             text_color=T["accent"],
         ).pack(side="left")
-        ctk.CTkLabel(
+        self._subtitle = ctk.CTkLabel(
             head,
             text=f"  {self.num_slots}× SOIC-16 · serprog",
             font=self.fonts["normal"],
             text_color=T["dim"],
-        ).pack(side="left", pady=(3, 0))
+        )
+        self._subtitle.pack(side="left", pady=(3, 0))
         self.conn_label = ctk.CTkLabel(
             head, text="", font=self.fonts["normal"], text_color=T["dim"]
         )
@@ -1065,6 +1241,32 @@ class HydraUI(ctk.CTk):
             w.bind("<Enter>", lambda e: self._render_theme_switch(True))
             w.bind("<Leave>", lambda e: self._render_theme_switch(False))
         self._render_theme_switch()
+        # Settings, left of the theme switch: drawn gear + "settings" (Ctrl+,)
+        gear = ctk.CTkFrame(head, fg_color="transparent", cursor="hand2")
+        gear.pack(side="right", padx=(0, 18))
+        self._gear_icon = tkinter.Label(gear, bd=0, highlightthickness=0, cursor="hand2")
+        self._gear_icon.pack(side="left")
+        self._gear_label = ctk.CTkLabel(
+            gear, text="settings", font=self.fonts["normal"], cursor="hand2"
+        )
+        self._gear_label.pack(side="left", padx=(6, 0))
+        self._gear_hover = False
+        for w in (gear, self._gear_icon, self._gear_label):
+            w.bind("<Button-1>", lambda e: self._toggle_settings())
+            w.bind("<Enter>", lambda e: self._render_gear(True))
+            w.bind("<Leave>", lambda e: self._render_gear(False))
+        self._render_gear()
+
+    def _render_gear(self, hover: Optional[bool] = None):
+        """Accent while hovered or while the settings page is open."""
+        if hover is not None:
+            self._gear_hover = hover
+        color = T["accent"] if (self._gear_hover or self._settings_open) else T["dim"]
+        scale = 2 if ctk.ScalingTracker.get_window_scaling(self) >= 1.5 else 1
+        bg = tk_color(T["bg"])
+        self._gear_img = tinted_icon(self, "gear", scale, tk_color(color), bg)
+        self._gear_icon.configure(image=self._gear_img, bg=bg)
+        self._gear_label.configure(text_color=color)
 
     def _render_theme_switch(self, hover: Optional[bool] = None):
         """Sun + "light mode" in dark mode, moon + "dark mode" in light mode."""
@@ -1112,11 +1314,13 @@ class HydraUI(ctk.CTk):
             parent, text="", font=self.fonts["bold"], text_color=T["red"], height=18
         )
         self.busy_banner.pack(fill="x", pady=(8, 0))
-        self.cs_display_var.trace_add("write", lambda *a: self._refresh_selection())
+        if not getattr(self, "_cs_traced", False):
+            self.cs_display_var.trace_add("write", lambda *a: self._refresh_selection())
+            self._cs_traced = True
         self._refresh_selection()
 
     def _create_settings(self, parent):
-        self._section(parent, "settings")
+        self._section(parent, "flashing options")
         panel = self._panel(parent)
         panel.pack(fill="x")
 
@@ -1231,6 +1435,7 @@ class HydraUI(ctk.CTk):
     def _create_status_line(self, parent):
         line = ctk.CTkFrame(parent, fg_color="transparent")
         line.pack(fill="x", pady=(14, 6))
+        self._status_line = line
         self.spin_label = ctk.CTkLabel(
             line, text="●", width=18, font=self.fonts["bold"], text_color=T["dim"]
         )
@@ -1344,6 +1549,7 @@ class HydraUI(ctk.CTk):
     def _apply_theme(self):
         """Re-colour the plain Tk widgets; customtkinter widgets switch by themselves."""
         self._render_theme_switch()
+        self._render_gear()
         if self._logo_lbl:
             self._logo_lbl.configure(bg=tk_color(T["bg"]))
         self._apply_log_colors()
@@ -1470,7 +1676,10 @@ class HydraUI(ctk.CTk):
             if entry["cs"] is not None:
                 queued.setdefault(entry["cs"], i + 1)
         for cs in range(self.num_slots):
-            slot, res, card = self.slots[cs], self._socket_result[cs], self.cards[cs]
+            card = self.cards.get(cs)
+            if card is None:  # the socket row is being rebuilt (_set_socket_count)
+                continue
+            slot, res = self.slots[cs], self._socket_result[cs]
             name = slot["name"] if slot and slot["detected"] else "…"
             broadcast_busy = (
                 CS_ALL in self._busy_sockets and slot is not None and slot["detected"]
@@ -1515,7 +1724,7 @@ class HydraUI(ctk.CTk):
                 else:
                     card.set_state("ok", slot["name"], size)
 
-        if self.has_all:
+        if self.has_all and CS_ALL in self.cards:
             self._refresh_all_card(self.cards[CS_ALL], queued)
         self._refresh_op_buttons()  # write is greyed while ALL can't be broadcast to
 
@@ -1559,7 +1768,9 @@ class HydraUI(ctk.CTk):
         self._socket_ident = [_UNSCANNED] * self.num_slots
         self._fw_caps = None
         self._fw_cs = None
+        self._fw_name = None
         self._refresh_sockets()
+        self._refresh_settings()
 
     def _watch_ports(self):
         """Poll for the programmer being plugged in / removed."""
@@ -1591,6 +1802,7 @@ class HydraUI(ctk.CTk):
                             )
                             self._reset_sockets()
                     self._port_connected = connected
+                    self._refresh_settings()
                 self.conn_label.configure(
                     text=f"● {cur}" if connected else "○ no programmer",
                     text_color=T["green"] if connected else T["red"],
@@ -1630,7 +1842,8 @@ class HydraUI(ctk.CTk):
                         fw_cs = (
                             prog.num_cs() if S_CMD_Q_NUM_CS in caps else LEGACY_CS_PINS
                         )
-                        self._fw_caps, self._fw_cs = caps, fw_cs
+                        name = prog.pgm_name() if S_CMD_Q_PGMNAME in caps else ""
+                        self._fw_caps, self._fw_cs, self._fw_name = caps, fw_cs, name
                         self.after(0, self._on_fw_cs)
                     prog.set_speed(SCAN_SPEED_HZ)
                     # Sockets past the firmware's CS lines would be refused (NAK)
@@ -1657,6 +1870,7 @@ class HydraUI(ctk.CTk):
                 "warning",
             )
         self._refresh_sockets()
+        self._refresh_settings()
 
     def _slot_from_ident(self, cs: int, ident: tuple) -> dict:
         jedec, uid = ident
@@ -1704,6 +1918,8 @@ class HydraUI(ctk.CTk):
         override = self.chip_override.get()
         misfit = []  # sockets that got a known chip the override isn't a definition of
         for cs, ident in enumerate(results):
+            if cs >= self.num_slots:  # the socket count was lowered meanwhile
+                break
             prev = self._socket_ident[cs]
             if ident == prev:
                 continue
@@ -1917,7 +2133,7 @@ class HydraUI(ctk.CTk):
         self.after(120, self._tick)
 
     def notify(self, title: str, message: str):
-        if NOTIFICATIONS_AVAILABLE:
+        if NOTIFICATIONS_AVAILABLE and self.notify_var.get():
             try:
                 notification.notify(
                     title=title, message=message, app_name="Hydra Flasher", timeout=6
@@ -1935,6 +2151,8 @@ class HydraUI(ctk.CTk):
         return self.cs_map[self.cs_display_var.get()]
 
     def _shortcut(self, fn: Callable):
+        if self._settings_open:  # the operations act on the hidden main view
+            return
         # Don't hijack Ctrl+V (paste) etc. while the user is typing in a text field
         try:
             if isinstance(self.focus_get(), tkinter.Entry):
@@ -2144,10 +2362,13 @@ class HydraUI(ctk.CTk):
         return not self.is_linux or os.access(port, os.R_OK | os.W_OK)
 
     @contextmanager
-    def _programmer(self) -> Iterator[Programmer]:
-        """Exclusive direct access to the programmer (worker thread)."""
+    def _programmer(self, port: str = "") -> Iterator[Programmer]:
+        """Exclusive direct access to the programmer (worker thread). port: the job's
+        port by default (a firmware update finds the Pico again on its own)."""
         with self._port_lock:
-            prog = Programmer(self._job.get("port") or self.port_entry.get().strip())
+            prog = Programmer(
+                port or self._job.get("port") or self.port_entry.get().strip()
+            )
             try:
                 yield prog
             finally:
@@ -2306,6 +2527,7 @@ class HydraUI(ctk.CTk):
         cs: Optional[int] = None,
         front: bool = False,
         key: Optional[tuple] = None,
+        needs_port: bool = True,
     ) -> bool:
         """Run worker() in a background thread. worker returns (success, message).
         While another job runs, the job is queued instead (except in production mode).
@@ -2331,14 +2553,17 @@ class HydraUI(ctk.CTk):
             self.log_note(f"Already running or queued: {title}", "warning")
             return False
         port = self.port_entry.get().strip()
-        if not port:
-            self._alert(
-                "No port", "Select the programmer's serial port first.", error=True
-            )
-            return False
-        use_sudo = self._prepare_access(port)
-        if use_sudo is None:
-            return False
+        if needs_port:
+            if not port:
+                self._alert(
+                    "No port", "Select the programmer's serial port first.", error=True
+                )
+                return False
+            use_sudo = self._prepare_access(port)
+            if use_sudo is None:
+                return False
+        else:  # firmware update: the Pico may already sit in its bootloader
+            use_sudo = False
         chip = self._pick_chip_definition(cs)
         if chip is None:
             return False
@@ -2421,6 +2646,7 @@ class HydraUI(ctk.CTk):
         self.log_job(entry["title"])
         self._refresh_sockets()
         self._refresh_busy_ui()
+        self._refresh_settings()
         self._tick()
 
         def run():
@@ -2534,6 +2760,7 @@ class HydraUI(ctk.CTk):
             self.notify("Failed", msg)
             self._set_led(LED["FAILED"])
         self.save_config()
+        self._refresh_settings()
 
     # ====================== Time estimates ======================
     def _eta_keys(self, entry: dict) -> List[str]:
@@ -4128,6 +4355,601 @@ class HydraUI(ctk.CTk):
             title=f"Verify all chips against {os.path.basename(path)}",
         )
 
+    # ====================== Settings page ======================
+    # Replaces the sockets, flashing options and buttons (self._top_view); the status
+    # line and the log stay visible below, so a firmware update shows its progress.
+    def _toggle_settings(self):
+        (self._close_settings if self._settings_open else self._open_settings)()
+
+    def _open_settings(self):
+        if self._settings_open:
+            return
+        if self._settings_view is None:
+            self._build_settings_view()
+        height = self._top_view.winfo_height()
+        self._top_view.pack_forget()
+        if height > 200:  # as tall as the main view, so the log doesn't jump
+            self._settings_body.configure(height=height - 52)
+        self._settings_view.pack(fill="x", before=self._status_line)
+        self._settings_open = True
+        self._render_gear()
+        self._refresh_settings()
+        self._load_binary_version()
+        if self._release is None and not self._release_checking:
+            self._check_release()
+
+    def _close_settings(self):
+        if not self._settings_open:
+            return
+        self._settings_view.pack_forget()
+        self._top_view.pack(fill="x", before=self._status_line)
+        self._settings_open = False
+        self._render_gear()
+
+    def _settings_row(self, panel, label: str) -> ctk.CTkFrame:
+        # (winfo_children() isn't empty for a new CTkFrame: it holds its own canvas)
+        first = not getattr(panel, "_settings_rows", 0)
+        panel._settings_rows = getattr(panel, "_settings_rows", 0) + 1
+        row = ctk.CTkFrame(panel, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=(10 if first else 3, 3))
+        ctk.CTkLabel(
+            row, text=label, width=130, anchor="w",
+            font=self.fonts["normal"], text_color=T["dim"],
+        ).pack(side="left")
+        return row
+
+    def _settings_note(self, row, color=None) -> ctk.CTkLabel:
+        lbl = ctk.CTkLabel(
+            row, text="", anchor="w", font=self.fonts["normal"],
+            text_color=color or T["dim"],
+        )
+        lbl.pack(side="left", padx=(12, 0), fill="x", expand=True)
+        return lbl
+
+    def _build_settings_view(self):
+        view = ctk.CTkFrame(self._ui_root, fg_color="transparent")
+        self._settings_view = view
+        top = ctk.CTkFrame(view, fg_color="transparent")
+        top.pack(fill="x", pady=(12, 0))
+        self._button(top, "← back", self._close_settings, width=90).pack(side="left")
+        ctk.CTkLabel(
+            top, text="settings", font=self.fonts["bold"], text_color=T["text"]
+        ).pack(side="left", padx=(14, 0))
+        ctk.CTkLabel(
+            top, text="changes apply right away · esc to go back",
+            font=self.fonts["small"], text_color=T["faint"],
+        ).pack(side="right")
+        body = ctk.CTkScrollableFrame(
+            view, fg_color="transparent", height=330,
+            scrollbar_button_color=T["border"],
+            scrollbar_button_hover_color=T["border_hi"],
+        )
+        body.pack(fill="x", pady=(4, 0))
+        self._settings_body = body
+        w = self._settings_widgets = {}
+
+        self._section(body, "hardware")
+        panel = self._panel(body)
+        panel.pack(fill="x")
+        row = self._settings_row(panel, "sockets")
+        self._sockets_var = ctk.StringVar(value=str(self.num_slots))
+        combo = self._combo(
+            row, [str(n) for n in range(1, MAX_SLOTS + 1)], self._sockets_var, 70
+        )
+        combo.configure(command=self._on_sockets_choice)
+        combo.pack(side="left")
+        w["sockets"] = self._settings_note(row)
+        row = self._settings_row(panel, "flashprog")
+        w["binary"] = self._settings_note(row, T["text"])
+        self._button(row, "auto-detect", self._auto_binary, width=110).pack(side="right")
+        self._button(row, "change…", self._change_binary, width=90).pack(
+            side="right", padx=(0, 6)
+        )
+        row.pack_configure(pady=(3, 10))  # the panel's last row
+
+        self._section(body, "firmware")
+        panel = self._panel(body)
+        panel.pack(fill="x")
+        row = self._settings_row(panel, "on the Pico")
+        w["fw_pico"] = self._settings_note(row, T["text"])
+        row = self._settings_row(panel, "latest release")
+        w["fw_latest"] = self._settings_note(row, T["text"])
+        self._button(row, "check again", self._check_release, width=110).pack(side="right")
+        row = self._settings_row(panel, "install")
+        self._button(
+            row, "from file…", self._update_firmware_file, width=120
+        ).pack(side="left", padx=(12, 0))
+        self._fw_latest_button = self._button(
+            row, "latest release", self._update_firmware_latest, width=150
+        )
+        self._fw_latest_button.pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(
+            row, text="or drop a .uf2 on the window",
+            font=self.fonts["small"], text_color=T["faint"],
+        ).pack(side="left", padx=(12, 0))
+        row.pack_configure(pady=(3, 10))  # the panel's last row
+
+        self._section(body, "app")
+        panel = self._panel(body)
+        panel.pack(fill="x")
+        row = self._settings_row(panel, "notifications")
+        toggle = TtyToggle(row, "when a job ends", self.notify_var, self.fonts["normal"])
+        toggle.pack(side="left", padx=(12, 0))
+        w["notify"] = self._settings_note(row)
+        self.notify_var.trace_add("write", lambda *a: self.save_config())
+        row = self._settings_row(panel, "drag and drop")
+        w["dnd"] = self._settings_note(row)
+        for key, label, text, fn in (
+            ("jedec", "chip IDs", "forget", self._forget_chips),
+            ("eta", "time estimates", "reset", self._reset_estimates),
+            ("recent", "recent files", "clear", self._clear_recent_files),
+        ):
+            row = self._settings_row(panel, label)
+            w[key] = self._settings_note(row)
+            self._button(row, text, fn, color=T["soft"], width=90).pack(side="right")
+        row = self._settings_row(panel, "files")
+        w["files"] = self._settings_note(row)
+        row.pack_configure(pady=(3, 10))  # the panel's last row
+
+    def _refresh_settings(self):
+        """Fill in the settings page (only while it's shown)."""
+        if not self._settings_open:
+            return
+        w = self._settings_widgets
+        home = os.path.expanduser("~")
+        idle = not (self.busy or self._queue or self._prod)
+        self._sockets_var.set(str(self.num_slots))
+        lines = "CS0" if self.num_slots == 1 else f"CS0–CS{self.num_slots - 1}"
+        w["sockets"].configure(
+            text=lines + ("" if idle else " · can't change while jobs run or wait")
+        )
+        version = f"  · {self._binary_version}" if self._binary_version else ""
+        w["binary"].configure(
+            text=trunc((self.flashrom_path or "").replace(home, "~") + version, 48)
+        )
+
+        text, color = self._fw_summary()
+        w["fw_pico"].configure(text=text, text_color=color)
+        rel, color = self._release, T["text"]
+        if self._release_checking:
+            text, color = "checking GitHub…", T["dim"]
+        elif rel is None:
+            text, color = "not checked", T["dim"]
+        elif "error" in rel:
+            text, color = trunc(f"couldn't check: {rel['error']}", 60), T["red"]
+        elif not rel:
+            text, color = "no firmware release published yet", T["dim"]
+        else:
+            text = f"HydraFlasher {rel['version']} · {rel['date']}"
+            installed = fw_version(self._fw_name)
+            if installed and version_key(rel["version"]) > version_key(installed):
+                text, color = text + " · update available", T["accent"]
+            elif installed and installed == rel["version"]:
+                text += " · installed"
+        w["fw_latest"].configure(text=text, text_color=color)
+        has_release = bool(rel) and "error" not in rel
+        self._fw_latest_button.configure(
+            text=f"latest ({rel['version']})" if has_release else "latest release",
+            text_color=T["text"] if has_release else T["faint"],
+        )
+
+        if not NOTIFICATIONS_AVAILABLE:
+            w["notify"].configure(text="needs the plyer package")
+        w["dnd"].configure(
+            text="on: drop images on sockets or the log" if self._dnd
+            else "off: needs the tkinterdnd2 package"
+        )
+        w["jedec"].configure(text=f"{len(self.jedec_cache)} learned from probes")
+        w["eta"].configure(text=f"{len(self.job_times)} remembered job durations")
+        w["recent"].configure(text=f"{len(self.recent_files)} in the list")
+        w["files"].configure(
+            text=f"{CONFIG_FILE.replace(home, '~')} · {DATA_DIR.replace(home, '~')}"
+        )
+
+    def _fw_summary(self) -> Tuple[str, str]:
+        """What the Pico's firmware is, as (text, colour) for the settings page."""
+        if not self._port_connected:
+            return "no programmer connected", T["dim"]
+        if self._fw_caps is None:
+            port = self.port_entry.get().strip()
+            if port and not self._port_accessible(port):
+                return "unknown: no direct access to the port (sudo)", T["dim"]
+            return "connected · not checked yet", T["dim"]
+        version = fw_version(self._fw_name)
+        if version:
+            return f"HydraFlasher {version} · {self._fw_cs} CS lines", T["text"]
+        return (
+            f"older firmware ({self._fw_cs} CS lines, no version) · update recommended",
+            T["yellow"],
+        )
+
+    def _on_sockets_choice(self, value: str):
+        if not self._set_socket_count(int(value)):
+            self._sockets_var.set(str(self.num_slots))
+        self._refresh_settings()
+
+    def _set_socket_count(self, n: int) -> bool:
+        """Change the number of sockets now: cards, targets, shortcuts and per-socket
+        state follow. Only while no job runs or waits (jobs refer to socket numbers)."""
+        if n == self.num_slots:
+            return True
+        if not 1 <= n <= MAX_SLOTS:
+            return False
+        if self.busy or self._queue or self._prod:
+            self.log_note(
+                "The socket count can't change while jobs run or wait, or in "
+                "production mode.",
+                "warning",
+            )
+            return False
+        old, sel = self.num_slots, self._selected_cs()
+        keep = min(old, n)
+        self.num_slots, self.has_all = n, n > 1
+        self.slots = self.slots[:keep] + [None] * (n - keep)
+        self._socket_result = self._socket_result[:keep] + [None] * (n - keep)
+        self._socket_ident = self._socket_ident[:keep] + [_UNSCANNED] * (n - keep)
+        self._build_cs_map()
+        # The target stays if it still exists, else the first socket
+        target = sel if sel in self.cs_labels else 0
+        for child in self._sockets_box.winfo_children():
+            child.destroy()
+        self.cards = {}
+        self.cs_display_var.set(self.cs_labels[target])
+        self._create_sockets(self._sockets_box)
+        self._subtitle.configure(text=f"  {n}× SOIC-16 · serprog")
+        self._bind_socket_keys()
+        self._register_drop_targets()
+        self._refresh_sockets()
+        self.save_config()
+        self.log_note(f"Socket count: {n}", "info")
+        if self._fw_cs is not None and n > self._fw_cs:
+            self._on_fw_cs()  # warns that the firmware has fewer CS lines
+        return True
+
+    def _load_binary_version(self):
+        path = self.flashrom_path
+
+        def work():
+            version = self._probe_binary(path)
+            self.after(0, self._binary_version_loaded, path, version)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _binary_version_loaded(self, path: str, version: str):
+        if path == self.flashrom_path:
+            self._binary_version = version
+            self._refresh_settings()
+
+    @staticmethod
+    def _probe_binary(path: Optional[str]) -> str:
+        """"flashprog 1.2" from `<path> --version`, "" if path isn't flashprog/flashrom."""
+        if not path:
+            return ""
+        try:
+            out = subprocess.run(
+                [path, "--version"], capture_output=True, text=True, timeout=5,
+                creationflags=CREATE_NO_WINDOW,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        # "flashprog p1.4 on Linux …", "flashrom v1.3.0 on …"
+        m = re.search(r"\b(flashprog|flashrom)\b\S*\s+([pv]?[0-9][\w.\-]*)", out, re.I)
+        if m:
+            return f"{m.group(1).lower()} {m.group(2)}"
+        return "flashprog" if re.search(r"flash(prog|rom)", out, re.I) else ""
+
+    def _change_binary(self):
+        path = self._ask_user_for_binary()
+        if path:
+            self._set_binary(path)
+
+    def _auto_binary(self):
+        found = self._auto_find_flashrom()
+        if not found:
+            self._alert(
+                "flashprog", "Neither flashprog nor flashrom was found.", error=True
+            )
+            return
+        self._set_binary(found)
+
+    def _set_binary(self, path: str):
+        if self.busy or self._queue:
+            self.log_note("The flashprog binary can't change while jobs run or wait.", "warning")
+            return
+        version = self._probe_binary(path)
+        if not version and not self._ask(
+            "flashprog",
+            f"{os.path.basename(path)} doesn't answer like flashprog or flashrom.\n\n"
+            "Use it anyway?",
+            yes="Use it",
+            no="Cancel",
+            danger=True,
+        ):
+            return
+        self.flashrom_path = path
+        self._binary_version = version
+        self.save_config()
+        self.log_note(f"flashprog binary: {path}" + (f" ({version})" if version else ""), "info")
+        self._refresh_settings()
+
+    def _forget_chips(self):
+        if not self.jedec_cache:
+            self.log_note("No chip IDs learned yet.", "dim")
+            return
+        if self.busy or self._queue:
+            self.log_note("Chip IDs can't be forgotten while jobs run or wait.", "warning")
+            return
+        if not self._ask(
+            "Forget chip IDs",
+            f"Forget the {len(self.jedec_cache)} chip ID(s) learned from probes?\n\n"
+            "Inserted chips are identified again with a probe.",
+            yes="Forget",
+            no="Cancel",
+        ):
+            return
+        self.jedec_cache.clear()
+        self._chip_choice.clear()
+        # Unscanned again: the next scan identifies the inserted chips anew
+        self._socket_ident = [_UNSCANNED] * self.num_slots
+        self.slots = [None] * self.num_slots
+        self.save_config()
+        self.log_note("Learned chip IDs forgotten", "info")
+        self._refresh_sockets()
+        self._refresh_settings()
+
+    def _reset_estimates(self):
+        n = len(self.job_times)
+        self.job_times.clear()
+        self.save_config()
+        self.log_note(f"Time estimates reset ({n} forgotten)", "dim")
+        self._refresh_settings()
+
+    # ====================== Firmware update ======================
+    def _check_release(self):
+        """Ask GitHub for the newest firmware release (in the background)."""
+        if self._release_checking:
+            return
+        self._release_checking = True
+        self._refresh_settings()
+
+        def work():
+            try:
+                result = latest_fw_release() or {}
+            except Exception as e:  # offline, rate limit, bad answer
+                result = {"error": str(getattr(e, "reason", e))}
+            self.after(0, self._release_checked, result)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _release_checked(self, result: dict):
+        self._release_checking = False
+        self._release = result
+        self._refresh_settings()
+
+    def _update_firmware_file(self):
+        path = self._ask_open_file(
+            "Select the Pico firmware (.uf2)",
+            [("Pico firmware", "*.uf2"), ("All files", "*.*")],
+        )
+        if path:
+            self._start_firmware_update(path=path)
+
+    def _update_firmware_latest(self):
+        rel = self._release
+        if not rel or "error" in rel:
+            self.log_note(
+                "No firmware release to install – check GitHub first (settings).",
+                "warning",
+            )
+            return
+        self._start_firmware_update(release=rel)
+
+    def _start_firmware_update(
+        self, path: Optional[str] = None, release: Optional[dict] = None
+    ) -> bool:
+        """Install a .uf2 (a file, or a GitHub release) on the Pico: restart it into
+        its bootloader, copy the file to the RPI-RP2 drive, check what comes back."""
+        if self._queue_blocked("firmware"):
+            return False
+        if self._prod:
+            self.log_note("Turn production mode off to update the firmware.", "warning")
+            return False
+        if path:
+            try:
+                version = read_uf2(path)["version"]
+            except (OSError, ValueError) as e:
+                self._alert(
+                    "Firmware", f"{os.path.basename(path)} can't be installed:\n{e}",
+                    error=True,
+                )
+                self.log_note(f"{os.path.basename(path)}: {e}", "error")
+                return False
+            name = os.path.basename(path)
+        else:
+            version, name = release["version"], release["name"]
+        installed = fw_version(self._fw_name)
+        now = (
+            f"HydraFlasher {installed}" if installed
+            else "older firmware" if self._fw_name is not None
+            else "unknown"
+        )
+        if version is None:
+            message = (
+                f"{name} doesn't look like HydraFlasher firmware.\n"
+                "With it, HydraFlasher may not be able to use the Pico.\n\n"
+                "Install it anyway?"
+            )
+        else:
+            message = (
+                f"Install firmware {version} ({name}) on the Pico?\n"
+                f"Now on the Pico: {now}.\n\n"
+                "The Pico restarts. The chips in the sockets aren't touched."
+            )
+        if not self._ask(
+            "Update firmware", message, yes="Install", no="Cancel", danger=version is None
+        ):
+            return False
+        return self._start_job(
+            "Updating firmware…",
+            lambda: self._firmware_worker(path, release, version),
+            title=f"Update firmware → {version or name}",
+            key=("firmware",),
+            needs_port=False,
+        )
+
+    def _firmware_worker(
+        self, path: Optional[str], release: Optional[dict], version: Optional[str]
+    ) -> Tuple[bool, str]:
+        steps = (["Download"] if release else []) + [
+            "Restart the Pico into its bootloader",
+            "Copy the firmware",
+            "Wait for the Pico",
+            "Check the new firmware",
+        ]
+        n, total = iter(range(1, len(steps) + 1)), len(steps)
+        if release:
+            self._step(next(n), total, f"Download {release['name']}")
+            path = self._download_release(release)
+            got = read_uf2(path)["version"]
+            if got != release["version"]:
+                return False, (
+                    f"The download holds firmware {got}, not {release['version']}."
+                )
+        self._step(next(n), total, "Restart the Pico into its bootloader")
+        drive = self._enter_bootloader()
+        self._step(next(n), total, f"Copy the firmware → {drive}")
+        self._copy_uf2(path, drive)
+        self._step(next(n), total, "Wait for the Pico to restart")
+        port = self._wait_for_pico()
+        if not port:
+            return False, (
+                "The Pico didn't come back as a HydraFlasher serial port – "
+                "unplug it and plug it in again."
+            )
+        self._step(next(n), total, f"Check the new firmware on {port}")
+        ident = self._read_fw_identity(port)
+        if ident is None:
+            return True, f"Firmware copied; {port} can't be opened to check it (sudo)."
+        caps, name, cs_lines = ident
+        self.after(0, self._firmware_installed, port, caps, name, cs_lines)
+        got = fw_version(name)
+        self._detail(f"the Pico reports: {name or 'no name'} · {cs_lines} CS lines")
+        if version and got != version:
+            return False, f"The Pico reports {name or 'older firmware'}, not {version}."
+        return True, f"Firmware {got or name} installed · {cs_lines} CS lines"
+
+    def _download_release(self, release: dict) -> str:
+        """Download a release's .uf2 into the data folder (worker thread)."""
+        folder = os.path.join(DATA_DIR, "firmware")
+        os.makedirs(folder, exist_ok=True)
+        dst = os.path.join(folder, os.path.basename(release["name"]))
+        if os.path.isfile(dst) and os.path.getsize(dst) == release.get("size"):
+            self._detail(f"already downloaded: {dst}")
+            return dst
+        req = urllib.request.Request(release["url"], headers={"User-Agent": "HydraFlasher"})
+        part = dst + ".part"
+        with urllib.request.urlopen(req, timeout=30) as resp, open(part, "wb") as f:
+            size = int(resp.headers.get("Content-Length") or release.get("size") or 0)
+            done = 0
+            while chunk := resp.read(64 * 1024):
+                if self._abort_requested:
+                    raise JobAborted()
+                f.write(chunk)
+                done += len(chunk)
+                if size:
+                    self.after(0, setattr, self, "_pct", min(100.0, done * 100 / size))
+        os.replace(part, dst)
+        self._detail(f"saved to {dst}")
+        return dst
+
+    def _enter_bootloader(self) -> str:
+        """Restart the Pico into its bootloader and return the RPI-RP2 drive (worker)."""
+        drive = find_rp2_drive()
+        if drive:
+            self._detail(f"the Pico is already in its bootloader: {drive}")
+            return drive
+        port, sent = self._job.get("port") or "", False
+        if port and os.path.exists(port) or (port and self.is_windows):
+            try:
+                with self._programmer(port) as prog:
+                    prog.bootsel()
+                sent = True
+                self._detail(f"restart command sent on {port}")
+            except Exception as e:  # older firmware without 0x21, no access, …
+                self._detail(f"couldn't restart it over {port}: {e}", "warning")
+        if not sent:
+            self._detail(
+                "Hold the BOOTSEL button on the Pico while you plug it in again…",
+                "warning",
+            )
+        deadline = time.monotonic() + (20 if sent else 120)
+        while time.monotonic() < deadline:
+            if self._abort_requested:
+                raise JobAborted()
+            drive = find_rp2_drive()
+            if drive:
+                self._detail(f"bootloader drive: {drive}")
+                return drive
+            time.sleep(0.5)
+        raise ProgrammerError("the Pico's bootloader drive (RPI-RP2) didn't show up")
+
+    def _copy_uf2(self, path: str, drive: str):
+        dst = os.path.join(drive, "hydraflasher.uf2")  # the name doesn't matter
+        try:
+            with open(path, "rb") as fin, open(dst, "wb") as fout:
+                shutil.copyfileobj(fin, fout, 64 * 1024)
+                fout.flush()
+                os.fsync(fout.fileno())
+        except OSError as e:
+            # The Pico restarts as soon as it has the last block, so the drive can
+            # vanish before the file is closed; only a drive that's still there failed
+            if find_rp2_drive(mount=False):
+                raise ProgrammerError(f"copying to {drive} failed: {e}")
+            self._detail("the drive left during the copy: the Pico is restarting")
+        if hasattr(os, "sync"):
+            os.sync()
+
+    def _wait_for_pico(self, timeout: float = 20) -> Optional[str]:
+        """The serial port of the restarted Pico (worker thread), None if it doesn't come."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._abort_requested:
+                raise JobAborted()
+            port = next(
+                (p.device for p in serial.tools.list_ports.comports()
+                 if p.vid == HYDRA_VID),
+                None,
+            )
+            if port:
+                return port
+            time.sleep(0.5)
+        return None
+
+    def _read_fw_identity(self, port: str):
+        """(command map, name, CS lines) of the firmware on port; None without access."""
+        if not self._port_accessible(port):
+            return None
+        last = None
+        for _ in range(10):  # the port takes a moment to accept commands
+            try:
+                with self._programmer(port) as prog:
+                    caps = prog.command_map()
+                    name = prog.pgm_name() if S_CMD_Q_PGMNAME in caps else ""
+                    cs_lines = prog.num_cs() if S_CMD_Q_NUM_CS in caps else LEGACY_CS_PINS
+                return caps, name, cs_lines
+            except Exception as e:
+                last = e
+                time.sleep(0.5)
+        raise ProgrammerError(f"the new firmware doesn't answer on {port}: {last}")
+
+    def _firmware_installed(self, port: str, caps: Set[int], name: str, cs_lines: int):
+        if self.port_entry.get().strip() != port:
+            self.port_entry.delete(0, "end")
+            self.port_entry.insert(0, port)
+        self._fw_caps, self._fw_name, self._fw_cs = caps, name, cs_lines
+        self._refresh_sockets()
+        self._refresh_settings()
+
     # ====================== Drag and drop ======================
     def _load_dnd(self) -> bool:
         """Load tkdnd into this Tk (optional tkinterdnd2 package)."""
@@ -4177,6 +4999,9 @@ class HydraUI(ctk.CTk):
             self.log_note("Drop a single image file.", "warning")
             return
         path = paths[0]
+        if path.lower().endswith(".uf2"):  # Pico firmware, never an SPI flash image
+            self._start_firmware_update(path=path)
+            return
         if target is None:
             self.log_note(
                 "Drop the image on a socket card to write it, "
@@ -4345,6 +5170,7 @@ class HydraUI(ctk.CTk):
         self.recent_files.clear()
         self.save_config()
         self.log_note("Recent files list cleared", "dim")
+        self._refresh_settings()
 
     def _add_recent_file(self, path: str):
         if path in self.recent_files:

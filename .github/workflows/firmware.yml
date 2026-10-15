@@ -1,12 +1,18 @@
 name: firmware
 on:
   push:
+    branches: ["**"]
+    # A tag fw-v<version> (e.g. fw-v1.1) also publishes a GitHub Release with the
+    # .uf2, which the app's Settings page offers as "latest firmware"
+    tags: ["fw-v*"]
     paths: ["firmware/**", ".github/workflows/firmware.yml"]
   pull_request:
     paths: ["firmware/**", ".github/workflows/firmware.yml"]
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # only used by the release step
     defaults:
       run:
         working-directory: firmware
@@ -22,3 +28,16 @@ jobs:
           path: |
             firmware/build/pico_serprog.uf2
             firmware/build/pico_serprog.elf
+      - name: Check that the tag matches FW_VERSION
+        if: startsWith(github.ref, 'refs/tags/fw-v')
+        run: |
+          version="${GITHUB_REF_NAME#fw-v}"
+          grep -q "#define FW_VERSION  \"$version\"" main.c || {
+            echo "Tag $GITHUB_REF_NAME doesn't match FW_VERSION in main.c" >&2; exit 1; }
+          cp build/pico_serprog.uf2 "build/hydraflasher-fw-$version.uf2"
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/fw-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Firmware ${{ github.ref_name }}
+          files: firmware/build/hydraflasher-fw-*.uf2

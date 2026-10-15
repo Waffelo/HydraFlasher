@@ -25,6 +25,11 @@
 
 #define CDC_ITF     0           // USB CDC interface no
 
+// Firmware version, reported by S_CMD_Q_PGMNAME as "HydraFlasher <version>" (16 bytes
+// at most). Releases are tagged fw-v<version>, CI checks that the two match.
+// 1.1: 10 chip selects, LEDs on GP16-18, S_CMD_Q_NUM_CS. Older firmware: "pico-serprog".
+#define FW_VERSION  "1.1"
+
 #define SPI_IF      spi0        // Which PL022 to use
 #define SPI_BAUD    10000000    // Default baudrate (10 MHz)
 
@@ -356,7 +361,9 @@ static void command_loop(void)
 
         case S_CMD_Q_PGMNAME:
         {
-            static const char progname[16] = "pico-serprog";
+            // Exactly 16 bytes, NUL-padded (flashprog prints at most 16 characters)
+            static const char progname[16] = "HydraFlasher " FW_VERSION;
+            _Static_assert(sizeof("HydraFlasher " FW_VERSION) <= 17, "name > 16 bytes");
             sendbyte_blocking(S_ACK);
             sendbytes_blocking(progname, sizeof progname);
             break;
