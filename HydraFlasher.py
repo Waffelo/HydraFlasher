@@ -13,6 +13,7 @@ import time
 import tkinter
 import tkinter.font
 import urllib.request
+import webbrowser
 import zlib
 import base64
 from contextlib import contextmanager
@@ -117,8 +118,13 @@ QUEUE_BLOCKED = {
 HYDRA_VID = 0xCAFE
 PICO_VID = 0x2E8A
 
+# The app's own version (semantic: minor for features, patch for fixes); the firmware
+# has its own (FW_VERSION in firmware/main.c)
+APP_VERSION = "1.0.0"
+
 # Firmware updates: GitHub Releases tagged fw-v<version> carry the .uf2 (CI builds them)
 GITHUB_REPO = "Waffelo/HydraFlasher"
+REPO_URL = f"https://github.com/{GITHUB_REPO}"
 FW_TAG_PREFIX = "fw-v"
 FW_NAME_PREFIX = "HydraFlasher "  # S_CMD_Q_PGMNAME of firmware 1.1+ ("pico-serprog" before)
 FW_VERSION_RE = re.compile(rb"HydraFlasher (\d+\.\d+)")
@@ -481,6 +487,26 @@ def latest_fw_release(timeout: float = 10) -> Optional[dict]:
         if best is None or version_key(rel["version"]) > version_key(best["version"]):
             best = rel
     return best
+
+
+def app_commit() -> str:
+    """The git commit the app runs from ("15d0a93", "15d0a93 modified" with local
+    changes), "" outside a git checkout."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        head = subprocess.run(
+            ["git", "-C", here, "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=3, creationflags=CREATE_NO_WINDOW,
+        )
+        if head.returncode != 0:
+            return ""
+        changed = subprocess.run(
+            ["git", "-C", here, "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True, text=True, timeout=3, creationflags=CREATE_NO_WINDOW,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return head.stdout.strip() + (" modified" if changed else "")
 
 
 def find_rp2_drive(mount: bool = True) -> Optional[str]:
@@ -1669,6 +1695,7 @@ class HydraUI(ctk.CTk):
     def _create_footer(self, parent):
         foot = ctk.CTkFrame(parent, fg_color="transparent")
         foot.pack(fill="x", pady=(6, 0))
+        self._footer = foot
         self.footer_left = ctk.CTkLabel(
             foot, text="", font=self.fonts["small"], text_color=T["faint"]
         )
@@ -4451,11 +4478,15 @@ class HydraUI(ctk.CTk):
             return
         if self._settings_view is None:
             self._build_settings_view()
-        height = self._top_view.winfo_height()
-        self._top_view.pack_forget()
-        if height > 200:  # as tall as the main view, so the log doesn't jump
-            self._settings_body.configure(height=height - 52)
-        self._settings_view.pack(fill="x", before=self._status_line)
+        # Full page: the main view, status line, log and footer step aside. Their
+        # pack options are kept to put them back exactly (see _close_settings).
+        self._hidden_views = [
+            (w, w.pack_info())
+            for w in (self._top_view, self._status_line, self._log_panel, self._footer)
+        ]
+        for w, _ in self._hidden_views:
+            w.pack_forget()
+        self._settings_view.pack(fill="both", expand=True)
         self._settings_open = True
         self._render_gear()
         self._refresh_settings()
@@ -4467,7 +4498,11 @@ class HydraUI(ctk.CTk):
         if not self._settings_open:
             return
         self._settings_view.pack_forget()
-        self._top_view.pack(fill="x", before=self._status_line)
+        for w, info in self._hidden_views:
+            info = {k: v for k, v in info.items() if k != "in"}
+            # Plain Tk's pack: the saved paddings are already scaled, customtkinter's
+            # pack() would scale them again on HiDPI screens
+            tkinter.Pack.pack_configure(w, **info)
         self._settings_open = False
         self._render_gear()
 
@@ -4505,12 +4540,15 @@ class HydraUI(ctk.CTk):
             font=self.fonts["small"], text_color=T["faint"],
         ).pack(side="right")
         body = ctk.CTkScrollableFrame(
-            view, fg_color="transparent", height=330,
+            view, fg_color="transparent",
             scrollbar_button_color=T["border"],
             scrollbar_button_hover_color=T["border_hi"],
         )
-        body.pack(fill="x", pady=(4, 0))
+        body.pack(fill="both", expand=True, pady=(4, 0))
         self._settings_body = body
+        # customtkinter scrolls on <MouseWheel> only; X11 sends the wheel as buttons 4/5
+        self.bind_all("<Button-4>", lambda e: self._settings_wheel(e, -1), add="+")
+        self.bind_all("<Button-5>", lambda e: self._settings_wheel(e, 1), add="+")
         w = self._settings_widgets = {}
 
         self._section(body, "hardware")
@@ -4597,9 +4635,57 @@ class HydraUI(ctk.CTk):
             row = self._settings_row(panel, label)
             w[key] = self._settings_note(row)
             self._button(row, text, fn, color=T["soft"], width=90).pack(side="right")
+        row = self._settings_row(panel, "version")
+        w["version"] = self._settings_note(row, T["text"])
         row = self._settings_row(panel, "files")
         w["files"] = self._settings_note(row)
         row.pack_configure(pady=(3, 10))  # the panel's last row
+
+        credit = ctk.CTkFrame(body, fg_color="transparent")
+        credit.pack(pady=(22, 12))
+        self._credit_links = []
+        for text, color, link in (
+            ("Vibed by Waffelo", T["dim"], True),
+            ("·", T["faint"], False),
+            (REPO_URL.replace("https://", ""), T["accent"], True),
+        ):
+            lbl = ctk.CTkLabel(
+                credit, text=text, font=self.fonts["small"], text_color=color,
+                cursor="hand2" if link else "",
+            )
+            lbl.pack(side="left", padx=4)
+            if link:
+                lbl.bind("<Button-1>", lambda e: self._open_repo())
+                self._credit_links.append(lbl)
+        self._app_commit: Optional[str] = None  # filled in by a background git call
+        threading.Thread(target=self._load_app_commit, daemon=True).start()
+
+    def _load_app_commit(self):
+        commit = app_commit()
+        self.after(0, self._app_commit_loaded, commit)
+
+    def _app_commit_loaded(self, commit: str):
+        self._app_commit = commit
+        self._refresh_settings()
+
+    def _open_repo(self):
+        try:
+            webbrowser.open(REPO_URL)
+        except Exception:
+            self.log_note(f"Couldn't open a browser: {REPO_URL}", "warning")
+
+    def _settings_wheel(self, event, direction: int):
+        """Scroll the settings page with the mouse wheel (Linux)."""
+        if not self._settings_open:
+            return
+        canvas = self._settings_body._parent_canvas
+        w = event.widget
+        while isinstance(w, tkinter.Misc):  # inside the settings page?
+            if w is canvas:
+                if canvas.yview() != (0.0, 1.0):
+                    canvas.yview_scroll(direction * 3, "units")
+                return
+            w = w.master
 
     def _refresh_settings(self):
         """Fill in the settings page (only while it's shown)."""
@@ -4661,6 +4747,8 @@ class HydraUI(ctk.CTk):
         w["files"].configure(
             text=f"{CONFIG_FILE.replace(home, '~')} · {DATA_DIR.replace(home, '~')}"
         )
+        commit = f" · git {self._app_commit}" if self._app_commit else ""
+        w["version"].configure(text=f"HydraFlasher {APP_VERSION}{commit}")
 
     def _build_name_fields(self):
         """One name field per configured socket, five to a row."""

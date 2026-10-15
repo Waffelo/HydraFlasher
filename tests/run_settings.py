@@ -128,16 +128,44 @@ def s1():
     app.update()
     check("settings page shown, main view hidden",
           app._settings_view.winfo_ismapped() and not app._top_view.winfo_ismapped())
-    check("log stays visible", app.log.winfo_ismapped())
+    check("full page: status line, log and footer hidden",
+          not any(w.winfo_ismapped() for w in (app._status_line, app._log_panel, app._footer)))
+    body = app._settings_body
+    check("settings fill the window", app._settings_view.winfo_height() > 500)
+    # Mouse wheel (X11: buttons 4/5) scrolls; needs content taller than the window
+    app.geometry("860x700")
+    app.update()
+    canvas = body._parent_canvas
+    before = canvas.yview()[0]
+    app._settings_widgets["binary"]._label.event_generate("<Button-5>", x=5, y=5)
+    app.update()
+    check("mouse wheel scrolls the settings", canvas.yview()[0] > before)
+    app._settings_widgets["binary"]._label.event_generate("<Button-4>", x=5, y=5)
+    app.update()
+    check("and back up", canvas.yview()[0] == before)
+    app.geometry("1000x900")
+    app.update()
+    # Version and credit
+    app.after(800, lambda: None)
+    opened = []
+    H.webbrowser.open = lambda url: opened.append(url)
+    for lbl in app._credit_links:
+        lbl._label.event_generate("<Button-1>", x=2, y=2)
+    check("credit links open the repository",
+          opened == [H.REPO_URL, H.REPO_URL] and app._credit_links[0].cget("text") == "Vibed by Waffelo")
     called = []
     app._shortcut(lambda: called.append(1))
     check("operation shortcuts ignored on the settings page", not called)
     w = app._settings_widgets
     check("firmware info: version and CS lines",
           w["fw_pico"].cget("text") == "HydraFlasher 1.1 · 10 CS lines")
+    check("version shown", w["version"].cget("text").startswith(f"HydraFlasher {H.APP_VERSION}"))
     app.event_generate("<Escape>")
     app.update()
     check("Esc goes back", not app._settings_open and app._top_view.winfo_ismapped())
+    order = [x.winfo_y() for x in (app._top_view, app._status_line, app._log_panel, app._footer)]
+    check("main view restored in order", all(x.winfo_ismapped() for x in
+          (app._status_line, app._log_panel, app._footer)) and order == sorted(order))
     app._open_settings()
 
     # Release info
