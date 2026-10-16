@@ -24,16 +24,15 @@
  */
 
 #include "tusb.h"
+#include "pico/unique_id.h"
 
-/* A combination of interfaces must have a unique product id, since PC will save device driver after the first plug.
- * Same VID/PID with different interface e.g MSC (first), then CDC (later) will possibly cause system error on PC.
- *
- * Auto ProductID layout's Bitmap:
- *   [MSB]       MIDI | HID | MSC | CDC          [LSB]
+/* USB identity: Raspberry Pi's vendor ID with its shared "Pico SDK CDC UART (RP2040)"
+ * product ID, which Raspberry Pi asks plain CDC devices to use instead of their own
+ * (https://github.com/raspberrypi/usb-pid). The product string "HydraFlasher" is what
+ * the app looks for. Firmware before 1.3 used TinyUSB's example VID 0xCAFE.
  */
-#define _PID_MAP(itf, n)  ( (CFG_TUD_##itf) << (n) )
-#define USB_PID           (0x4000 | _PID_MAP(CDC, 0) | _PID_MAP(MSC, 1) | _PID_MAP(HID, 2) | \
-                           _PID_MAP(MIDI, 3) | _PID_MAP(VENDOR, 4) )
+#define USB_VID           0x2E8A
+#define USB_PID           0x000A
 
 //--------------------------------------------------------------------+
 // Device Descriptors
@@ -51,7 +50,7 @@ tusb_desc_device_t const desc_device =
     .bDeviceProtocol    = MISC_PROTOCOL_IAD,
     .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
 
-    .idVendor           = 0xCafe,
+    .idVendor           = USB_VID,
     .idProduct          = USB_PID,
     .bcdDevice          = 0x0100,
 
@@ -158,7 +157,7 @@ char const* string_desc_arr [] =
   (const char[]) { 0x09, 0x04 }, // 0: is supported language is English (0x0409)
   "Dragons Inc.",                 // 1: Manufacturer
   "HydraFlasher",                // 2: Product
-  "621621",                      // 3: Serials, should use chip ID
+  NULL,                          // 3: Serial: the flash chip's unique ID (below)
   "TinyUSB CDC",                 // 4: CDC Interface
 };
 
@@ -184,6 +183,12 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid)
     if ( !(index < sizeof(string_desc_arr)/sizeof(string_desc_arr[0])) ) return NULL;
 
     const char* str = string_desc_arr[index];
+    // Each board its own serial number, so two Picos are told apart (by-id names)
+    static char serial[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
+    if (index == 3) {
+      pico_get_unique_board_id_string(serial, sizeof serial);
+      str = serial;
+    }
 
     // Cap at max char
     chr_count = strlen(str);

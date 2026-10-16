@@ -4,6 +4,18 @@ Each release (`fw-v<version>` tag) publishes the section of its version as the G
 
 To update a Pico running HydraFlasher firmware: in the app, **settings → firmware → latest**. A blank Pico, or one with other firmware: hold **BOOTSEL** while plugging it in, then the same (see the [user guide](https://github.com/Waffelo/HydraFlasher/wiki/Settings#updating-the-firmware)).
 
+## Unreleased (1.3)
+
+**Its own USB identity, done properly.** The Pico now uses Raspberry Pi's USB vendor ID with the product ID Raspberry Pi assigns to Pico SDK serial devices, instead of TinyUSB's example vendor ID `0xCAFE`, which isn't meant for distributed devices.
+
+### Changed
+- **USB ID `2E8A:000A`** (was `CAFE:4001`). The product name stays "HydraFlasher", which is how the app finds the Pico.
+- **Serial number from the Pico's unique flash ID** (was `621621` on every board), so two Picos get different names in `/dev/serial/by-id/` and on Windows.
+
+### Compatibility
+- Needs an app from the same day or later to be selected automatically after the update (older apps still find it by its name, with a lower score).
+- On Windows, the Pico gets a new COM port number once, as it's a new device to Windows.
+
 ## 1.2 · 2026-10-15
 
 **Socket detection.** The Pico can now tell which of its chip-select lines lead to a socket, so the app sets its socket count by itself.

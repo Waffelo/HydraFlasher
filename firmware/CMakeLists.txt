@@ -13,5 +13,5 @@ set_target_properties(tinyusb_device_base PROPERTIES INTERFACE_SOURCES "${TUSB_D
 add_executable(pico_serprog)
 target_sources(pico_serprog PRIVATE main.c usb_descriptors.c tinyusb_patched/cdc_device.c)
 target_include_directories(pico_serprog PRIVATE ${PICO_TINYUSB_PATH}/src/class/cdc)
-target_link_libraries(pico_serprog PRIVATE pico_stdlib hardware_spi hardware_dma tinyusb_device)
+target_link_libraries(pico_serprog PRIVATE pico_stdlib pico_unique_id hardware_spi hardware_dma tinyusb_device)
 pico_add_extra_outputs(pico_serprog)

@@ -13,7 +13,7 @@ It's based on [pico-serprog](https://github.com/stacksmashing/pico-serprog) by T
 - **Faster writes and erases.** When the host polls the flash status register, the Pico waits for the chip on its own (up to 5 ms) instead of answering every poll over USB.
 - **Faster reads.** Reads are double-buffered with DMA: the next chunk is read from the flash while the current one goes out over USB.
 - **Safe chip swapping.** When the host releases the pins (flashprog does on exit), SCK, MOSI and MISO go high-impedance. While enabled, MISO is pulled up, so an empty socket reads as `0xFF`.
-- **Its own USB identity**, vendor ID `0xCAFE` and product "HydraFlasher", so the GUI finds the right serial port automatically.
+- **Its own USB identity**: product "HydraFlasher" with a serial number from the Pico's unique ID, under Raspberry Pi's shared ID for Pico SDK serial devices (`2E8A:000A`), so the GUI finds the right serial port automatically. (Firmware before 1.3 used TinyUSB's example ID `0xCAFE`.)
 
 ## Pinout
 

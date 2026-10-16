@@ -145,8 +145,8 @@ QUEUE_BLOCKED = {
 }
 
 # Must match the firmware's USB descriptors (usb_descriptors.c)
-HYDRA_VID = 0xCAFE
-PICO_VID = 0x2E8A
+HYDRA_VID = 0xCAFE  # firmware before 1.3 (TinyUSB's example vendor ID)
+PICO_VID = 0x2E8A  # firmware 1.3+: Raspberry Pi's ID, product "HydraFlasher"
 
 # The app's own version (semantic: minor for features, patch for fixes); the firmware
 # has its own (FW_VERSION in firmware/main.c)
@@ -6464,7 +6464,7 @@ class HydraUI(ctk.CTk):
                 raise JobAborted()
             port = next(
                 (p.device for p in serial.tools.list_ports.comports()
-                 if p.vid == HYDRA_VID),
+                 if p.vid == HYDRA_VID or "hydraflasher" in (p.product or "").lower()),
                 None,
             )
             if port:

@@ -17,7 +17,7 @@ sockets: HydraFlasher scans them live, flashes and verifies each chip, and logs
 every run.
 
 
-**Note that:** This is a full vibe coded project for my work. I do not prefer vibe coding, this is just a SNCA project so I can make my work easier and faster..
+**Note that:** This is a full vibe coded project for my work. I do not prefer vibe coding, this is just a SNCA project so I can make my work easier and faster.
 
 <p align="center">
   <img src="screenshot.png" alt="HydraFlasher main window" width="621">
