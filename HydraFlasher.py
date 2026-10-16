@@ -3213,22 +3213,22 @@ class HydraUI(ctk.CTk):
                 finally:
                     close_serial(ser)
             elif self.sudo_password:
-                script = (
-                    "import sys, serial\n"
-                    "with serial.Serial(sys.argv[1], 115200, timeout=0.5) as s:\n"
-                    "    s.write(bytes([0x20, int(sys.argv[2])])); s.read(1)\n"
-                )
+                # Plain sh, not this program: root can't read the AppImage's FUSE
+                # mount (and a packaged app has no Python to run a script with), and
+                # root's Python may lack pyserial. Raw mode: the bytes go out as they are.
+                script = 'stty -F "$1" raw -echo clocal && printf "$2" > "$1"'
                 subprocess.run(
                     [
                         "sudo",
                         "-S",
                         "-p",
                         "",
-                        sys.executable,
+                        "sh",
                         "-c",
                         script,
+                        "sh",
                         port,
-                        str(state),
+                        f"\\{S_CMD_SET_LED:03o}\\{state:03o}",  # printf's octal escapes
                     ],
                     input=self.sudo_password + "\n",
                     text=True,
