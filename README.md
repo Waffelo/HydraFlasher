@@ -17,7 +17,7 @@ sockets: HydraFlasher scans them live, flashes and verifies each chip, and logs
 every run.
 
 
-**Note that:** This is a full vibe coded project for my work. I do not prefer vibe coding, this is just a SNCA project so I can make my work easier and faster..
+**Note that:** This is a full vibe coded project for my work. I do not prefer vibe coding, this is just a SNCA project so I can make my work easier and faster.
 
 <p align="center">
   <img src="screenshot.png" alt="HydraFlasher main window" width="621">
@@ -86,4 +86,6 @@ which the app's settings page can download and install on the Pico.
 ## License
 
 GPL-3.0, see `LICENSE`. The firmware keeps its upstream licenses
-(`firmware/COPYING`, `firmware/COPYING.CC-BY-SA`).
+(`firmware/COPYING`, `firmware/COPYING.CC-BY-SA`). The downloadable packages
+include the licenses of the software bundled with the app in
+`THIRD-PARTY-LICENSES.txt` (settings → version → **licenses**).

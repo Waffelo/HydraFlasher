@@ -10,6 +10,8 @@ Needs the packages from requirements.txt plus pyinstaller; on Windows Inno Setup
 (ISCC.exe), on Linux appimagetool (downloaded if missing). Every built program is
 started with --self-test (a display is needed: xvfb-run on a headless Linux) and the
 build fails if one doesn't come up. CI: .github/workflows/app.yml."""
+import glob
+import hashlib
 import json
 import os
 import platform
@@ -26,10 +28,17 @@ PKG = os.path.join(ROOT, "packaging")
 BUILD = os.path.join(ROOT, "build", "app")
 DIST = os.path.join(ROOT, "dist")
 RELEASE = os.path.join(ROOT, "release")
+# A fixed appimagetool release, checked against its SHA-256 (not "continuous", which
+# changes under us)
 APPIMAGETOOL_URL = (
-    "https://github.com/AppImage/appimagetool/releases/download/continuous/"
+    "https://github.com/AppImage/appimagetool/releases/download/1.9.1/"
     "appimagetool-x86_64.AppImage"
 )
+APPIMAGETOOL_SHA256 = "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+# Python packages that end up in the bundle (requirements-build.txt)
+BUNDLED_DISTS = ["customtkinter", "darkdetect", "pyserial", "plyer", "tkinterdnd2",
+                 "pyinstaller"]
+LICENSES_NAME = "THIRD-PARTY-LICENSES.txt"
 
 
 def app_version() -> str:
@@ -50,12 +59,82 @@ def git_commit() -> str:
     return head + (" modified" if head and changed else "")
 
 
+def _section(title: str, body: str) -> str:
+    return f"{'=' * 78}\n{title}\n{'=' * 78}\n\n{body.strip()}\n\n"
+
+
+def third_party_licenses(bundle: str = "") -> str:
+    """The licence texts of everything the package contains besides HydraFlasher:
+    the Python packages, Python (with Tcl/Tk etc.) and, on Linux, the system
+    libraries PyInstaller copied into `bundle` (their Debian/Ubuntu copyright files).
+    MIT/BSD-style licences require these notices to ship with the binaries."""
+    from importlib import metadata
+
+    parts = [
+        "HydraFlasher is free software under the GNU General Public License v3 "
+        "(LICENSE.txt). Its packages also contain the following software, under "
+        "their own licences.\n\n"
+    ]
+    for name in BUNDLED_DISTS:
+        try:
+            dist = metadata.distribution(name)
+        except metadata.PackageNotFoundError:
+            continue
+        texts = []
+        for f in dist.files or []:
+            if os.path.basename(str(f)).upper().startswith(
+                ("LICENSE", "LICENCE", "COPYING", "NOTICE")
+            ):
+                try:
+                    texts.append(f"--- {f} ---\n{f.read_text(encoding='utf-8')}")
+                except (OSError, UnicodeDecodeError):
+                    pass
+        kind = dist.metadata.get("License-Expression") or dist.metadata.get("License") or ""
+        body = "\n".join(texts) or f"License: {kind}"
+        parts.append(_section(f"{name} {dist.version} ({kind[:60]})", body))
+
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    for path in (
+        os.path.join(sys.base_prefix, "LICENSE.txt"),  # python.org Windows build
+        os.path.join(sys.base_prefix, "lib", f"python{version}", "LICENSE.txt"),
+        f"/usr/share/doc/python{version}/copyright",  # Debian/Ubuntu
+        f"/usr/share/doc/libpython{version}-stdlib/copyright",
+    ):
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8", errors="replace") as f:
+                parts.append(_section(f"Python {sys.version.split()[0]}", f.read()))
+            break
+
+    if bundle and shutil.which("dpkg"):
+        packages = set()
+        for lib in glob.glob(os.path.join(bundle, "**", "*.so*"), recursive=True):
+            out = subprocess.run(["dpkg", "-S", "*/" + os.path.basename(lib)],
+                                 capture_output=True, text=True).stdout
+            packages.update(line.split(":")[0] for line in out.splitlines() if ":" in line)
+        for pkg in sorted(packages):
+            path = f"/usr/share/doc/{pkg}/copyright"
+            if os.path.isfile(path):
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    parts.append(_section(f"{pkg} (system library)", f.read()))
+    return "".join(parts)
+
+
+def write_licenses(folder: str, bundle: str = "") -> str:
+    """LICENSE.txt (HydraFlasher, GPL) and THIRD-PARTY-LICENSES.txt into folder."""
+    os.makedirs(folder, exist_ok=True)
+    shutil.copy(os.path.join(ROOT, "LICENSE"), os.path.join(folder, "LICENSE.txt"))
+    path = os.path.join(folder, LICENSES_NAME)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(third_party_licenses(bundle))
+    return path
+
+
 def run(cmd, **kw):
     print("$", " ".join(str(c) for c in cmd), flush=True)
     subprocess.run(cmd, check=True, **kw)
 
 
-def pyinstaller(name: str, onefile: bool, icon: str, hidden: list):
+def pyinstaller(name: str, onefile: bool, icon: str, hidden: list, extra_data=()):
     """Freeze HydraFlasher.py (windowed: no console)."""
     cmd = [
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",
@@ -76,6 +155,9 @@ def pyinstaller(name: str, onefile: bool, icon: str, hidden: list):
     with open(commit, "w", encoding="utf-8") as f:
         f.write(git_commit())
     cmd += ["--add-data", f"{commit}{os.pathsep}."]
+    if extra_data:
+        for path in extra_data:
+            cmd += ["--add-data", f"{path}{os.pathsep}."]
     for module in hidden:
         cmd += ["--hidden-import", module]
     cmd += ["--onefile"] if onefile else ["--onedir"]
@@ -99,8 +181,11 @@ def self_test(program: list, env=None):
 def build_windows(version: str):
     icon = os.path.join(PKG, "icons", "hydraflasher.ico")
     hidden = ["plyer.platforms.win.notification"]
-    pyinstaller("HydraFlasher", False, icon, hidden)  # folder: for the installer
-    pyinstaller("HydraFlasher-portable", True, icon, hidden)
+    notices = os.path.join(BUILD, "notices")
+    write_licenses(notices)  # python.org's LICENSE.txt covers its DLLs (Tcl/Tk, …)
+    data = [os.path.join(notices, n) for n in ("LICENSE.txt", LICENSES_NAME)]
+    pyinstaller("HydraFlasher", False, icon, hidden, data)  # folder: for the installer
+    pyinstaller("HydraFlasher-portable", True, icon, hidden, data)
     self_test([os.path.join(DIST, "HydraFlasher", "HydraFlasher.exe")])
     portable = os.path.join(RELEASE, f"HydraFlasher-{version}-portable.exe")
     shutil.copy(os.path.join(DIST, "HydraFlasher-portable.exe"), portable)
@@ -131,6 +216,8 @@ def build_windows(version: str):
 def build_linux(version: str):
     icon = os.path.join(PKG, "icons", "hydraflasher.png")
     pyinstaller("HydraFlasher", False, icon, ["plyer.platforms.linux.notification"])
+    internal = os.path.join(DIST, "HydraFlasher", "_internal")
+    write_licenses(internal, bundle=internal)  # next to the app's own files
     self_test([os.path.join(DIST, "HydraFlasher", "HydraFlasher")])
 
     appdir = os.path.join(ROOT, "build", "HydraFlasher.AppDir")
@@ -146,6 +233,11 @@ def build_linux(version: str):
     if not os.path.exists(tool):
         print("downloading appimagetool", flush=True)
         urllib.request.urlretrieve(APPIMAGETOOL_URL, tool)
+        with open(tool, "rb") as f:
+            got = hashlib.sha256(f.read()).hexdigest()
+        if got != APPIMAGETOOL_SHA256:
+            os.unlink(tool)
+            sys.exit(f"appimagetool checksum mismatch: {got}")
         os.chmod(tool, os.stat(tool).st_mode | stat.S_IEXEC)
     # Extract-and-run: no FUSE needed (CI runners, containers)
     env = dict(os.environ, ARCH="x86_64", APPIMAGE_EXTRACT_AND_RUN="1")

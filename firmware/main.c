@@ -1,5 +1,5 @@
 /**
- * Further modified by Jakub heger <contact@waffelo.net>
+ * Further modified by Jakub Heger <contact@waffelo.net>
  * Copyright (C) 2021, Mate Kukri <km@mkukri.xyz>
  * Based on "pico-serprog" by Thomas Roth <code@stacksmashing.net>
  *
@@ -29,7 +29,7 @@
 // at most). Releases are tagged fw-v<version>, CI checks that the two match.
 // 1.1: 10 chip selects, LEDs on GP16-18, S_CMD_Q_NUM_CS. Older firmware: "pico-serprog".
 // 1.2: S_CMD_Q_CS_WIRED (which CS lines a socket board pulls up).
-#define FW_VERSION  "1.2"
+#define FW_VERSION  "1.3"
 
 #define SPI_IF      spi0        // Which PL022 to use
 #define SPI_BAUD    10000000    // Default baudrate (10 MHz)

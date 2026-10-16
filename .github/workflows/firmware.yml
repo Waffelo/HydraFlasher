@@ -19,13 +19,13 @@ jobs:
     steps:
       # First: every run step starts in firmware/ (defaults above), which only
       # exists after the checkout
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi cmake
       # 2.2.0 brings TinyUSB 0.18.0, which tinyusb_patched/cdc_device.c is based on
       - run: git clone --depth 1 -b 2.2.0 https://github.com/raspberrypi/pico-sdk
       - run: cd pico-sdk && git submodule update --init lib/tinyusb
       - run: ./build.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: pico_serprog
           path: |
@@ -55,7 +55,7 @@ jobs:
           cat build/release-notes.md
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/fw-v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
         with:
           name: Firmware v${{ steps.version.outputs.version }}
           # The changelog section, followed by GitHub's list of merged pull requests
