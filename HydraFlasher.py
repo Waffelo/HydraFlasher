@@ -24,12 +24,28 @@ import customtkinter as ctk
 import serial
 import serial.tools.list_ports
 
+# PyInstaller's bootloader points LD_LIBRARY_PATH at the bundled libraries (Linux), and
+# every program started from the packaged app inherited it: kdialog didn't even start
+# with the bundle's older liblzma, so the file picker did nothing. Programs started from
+# here get the system's libraries again; this process keeps the bundled ones (the
+# loader reads the variable only at startup).
+if getattr(sys, "frozen", False) and "LD_LIBRARY_PATH" in os.environ:
+    _system_libs = os.environ.pop("LD_LIBRARY_PATH_ORIG", None)
+    if _system_libs is None:
+        del os.environ["LD_LIBRARY_PATH"]
+    else:
+        os.environ["LD_LIBRARY_PATH"] = _system_libs
+
 try:
     from plyer import notification
-
-    NOTIFICATIONS_AVAILABLE = True
 except ImportError:
-    NOTIFICATIONS_AVAILABLE = False
+    notification = None
+# On Linux notify-send is called directly: plyer falls back to it when Python's dbus
+# module is missing (as in the AppImage), but asks it for a notification that never
+# closes ("-t 0")
+NOTIFY_SEND = shutil.which("notify-send") if platform.system() == "Linux" else None
+NOTIFICATIONS_AVAILABLE = bool(NOTIFY_SEND or notification)
+NOTIFY_TIMEOUT_S = 6
 
 try:
     from tkinterdnd2 import COPY, DND_FILES, TkinterDnD
@@ -110,6 +126,8 @@ BLANK_CHECK_PIECE = 1024 * 1024  # granularity of the blank check
 PARTIAL_MAX_USED = 0.9  # above this fraction of used blocks, just write everything
 # Operations whose durations are remembered for the "~… left" estimate (see _eta_keys)
 ETA_OPS = ("write", "read", "erase", "verify")
+# Operations that only notify when they fail: a chip found is no news (see _job_op)
+NOTIFY_FAILURE_ONLY = ("probe", "identify")
 ETA_MAX_ENTRIES = 300
 # Operations refused while a job runs or waits in the queue: operation -> reason
 QUEUE_BLOCKED = {
@@ -908,6 +926,29 @@ def app_commit() -> str:
     except (OSError, subprocess.SubprocessError):
         return ""
     return head.stdout.strip() + (" modified" if changed else "")
+
+
+def desktop_notify(title: str, message: str) -> None:
+    """A desktop notification that closes by itself after NOTIFY_TIMEOUT_S. Doesn't wait
+    for the notification server: it's called on the UI thread when a job ends."""
+    if NOTIFY_SEND:
+        cmd = [NOTIFY_SEND, "-a", "Hydra Flasher", "-t", str(NOTIFY_TIMEOUT_S * 1000),
+               title, message]
+
+        def run():
+            try:
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=30)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+        threading.Thread(target=run, daemon=True).start()
+    elif notification:  # Windows: plyer shows it from its own thread
+        try:
+            notification.notify(title=title, message=message, app_name="Hydra Flasher",
+                                timeout=NOTIFY_TIMEOUT_S)
+        except Exception:
+            pass
 
 
 def rp2_drive_present() -> bool:
@@ -2878,13 +2919,8 @@ class HydraUI(ctk.CTk):
         self.after(120, self._tick)
 
     def notify(self, title: str, message: str):
-        if NOTIFICATIONS_AVAILABLE and self.notify_var.get():
-            try:
-                notification.notify(
-                    title=title, message=message, app_name="Hydra Flasher", timeout=6
-                )
-            except Exception:
-                pass
+        if self.notify_var.get():
+            desktop_notify(title, message)
 
     human_size = staticmethod(human_size)
 
@@ -3543,7 +3579,8 @@ class HydraUI(ctk.CTk):
         if ok:
             self.log_line(f"{BULLET} ✓ {msg}", "success")
             self._set_idle_status(trunc(first, 90), T["green"], took)
-            self.notify("Success", msg)
+            if self._job_op(self._entry) not in NOTIFY_FAILURE_ONLY:
+                self.notify("Success", msg)
             self._set_led(LED["SUCCESS"])
         else:
             self.log_line(f"{BULLET} ✕ {msg}", "error")
@@ -3553,6 +3590,11 @@ class HydraUI(ctk.CTk):
         self.save_config()
         self._refresh_settings()
 
+    @staticmethod
+    def _job_op(entry: dict) -> str:
+        """The operation of a queue entry, from its title: "write", "probe", "identify"…"""
+        return entry.get("title", "").split(" ", 1)[0].lower()
+
     # ====================== Time estimates ======================
     def _eta_keys(self, entry: dict) -> List[str]:
         """Signatures a job's duration is remembered under, most specific first:
@@ -3560,7 +3602,7 @@ class HydraUI(ctk.CTk):
         time. The first one also names the image file (its size and mtime), so a
         repeated job gets its own time and a rebuilt image still gets an estimate from
         the second. Empty when the job isn't estimated (probe) or its chips are unknown."""
-        op = entry.get("title", "").split(" ", 1)[0].lower()
+        op = self._job_op(entry)
         cs, key, job = entry.get("cs"), entry.get("key", ()), entry.get("job", {})
         if op not in ETA_OPS or cs is None:
             return []
@@ -4244,9 +4286,15 @@ class HydraUI(ctk.CTk):
         for cmd in commands:
             if not shutil.which(cmd[0]):
                 continue
+            started = time.monotonic()
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True)
             except Exception:
+                continue
+            if (result.returncode != 0 and result.stderr.strip()
+                    and time.monotonic() - started < 1.0):
+                # Failed to start (missing library, no display): a cancelled dialog
+                # takes longer, so try the next one instead of doing nothing
                 continue
             path = result.stdout.strip() if result.returncode == 0 else ""
             return True, path or None
@@ -5436,7 +5484,10 @@ class HydraUI(ctk.CTk):
         )
 
         if not NOTIFICATIONS_AVAILABLE:
-            w["notify"].configure(text="needs the plyer package")
+            w["notify"].configure(
+                text="needs notify-send (libnotify)" if self.is_linux
+                else "needs the plyer package"
+            )
         w["dnd"].configure(
             text="on: drop images on sockets or the log" if self._dnd
             else "off: needs the tkinterdnd2 package"
@@ -6293,8 +6344,8 @@ def acquire_instance_lock():
 
 def self_test(out_path: str) -> int:
     """Check that a packaged build (PyInstaller) has everything it needs: Tk with a
-    display, customtkinter's theme files, the icons, the serial port listing and the
-    optional packages. Writes a JSON report to out_path; exit code 0 = good. Used by
+    display, customtkinter's theme files, the icons, the serial port listing, the
+    optional packages, and that programs it starts get the system's libraries. Writes a JSON report to out_path; exit code 0 = good. Used by
     CI on the .exe and the AppImage (a windowed .exe has no console to print to)."""
     report = {"app": APP_VERSION, "python": sys.version.split()[0], "ok": False}
     try:
@@ -6307,6 +6358,10 @@ def self_test(out_path: str) -> int:
         ctk.CTkLabel(app, text="self test").pack()  # fonts, drawing engine
         app.update()
         report["ports"] = len(serial.tools.list_ports.comports())
+        bundle = getattr(sys, "_MEIPASS", None)
+        if bundle and bundle in os.environ.get("LD_LIBRARY_PATH", ""):
+            # kdialog, flashprog, notify-send… would load the bundled libraries
+            raise RuntimeError("LD_LIBRARY_PATH for started programs points into the bundle")
         report["notifications"] = NOTIFICATIONS_AVAILABLE
         report["dnd"] = False
         if DND_AVAILABLE:

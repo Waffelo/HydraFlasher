@@ -53,7 +53,11 @@ for t in "$@"; do
     t=$(basename "$t")
     work=$(mktemp -d)
     cp "$here"/*.py "$work"/
-    out=$(cd "$work" && timeout 120 python3 "$t" "$src" "$work/shot.png" 2>&1)
+    # A finished job shows a desktop notification: here notify-send does nothing (on
+    # the hidden display's own D-Bus it would start a notification server)
+    mkdir "$work/bin" && printf '#!/bin/sh\n' > "$work/bin/notify-send"
+    chmod +x "$work/bin/notify-send"
+    out=$(cd "$work" && PATH="$work/bin:$PATH" timeout 120 python3 "$t" "$src" "$work/shot.png" 2>&1)
     pass=$(printf '%s\n' "$out" | grep -c '^PASS')
     fail=$(printf '%s\n' "$out" | grep -c '^FAIL')
     printf '%-22s %2d passed, %d failed\n' "$t" "$pass" "$fail"
