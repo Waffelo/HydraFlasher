@@ -16,6 +16,7 @@ import urllib.request
 import webbrowser
 import zlib
 import base64
+import html
 from contextlib import contextmanager
 from tkinter import filedialog, messagebox
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple
@@ -910,8 +911,14 @@ def latest_fw_release(timeout: float = 10) -> Optional[dict]:
 
 def app_commit() -> str:
     """The git commit the app runs from ("15d0a93", "15d0a93 modified" with local
-    changes), "" outside a git checkout."""
+    changes), "" outside a git checkout. A packaged build has it from build time."""
     here = os.path.dirname(os.path.abspath(__file__))
+    if getattr(sys, "frozen", False):  # packaging/build.py writes it
+        try:
+            with open(os.path.join(here, "commit.txt"), encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError:
+            return ""
     try:
         head = subprocess.run(
             ["git", "-C", here, "rev-parse", "--short", "HEAD"],
@@ -928,15 +935,28 @@ def app_commit() -> str:
     return head.stdout.strip() + (" modified" if changed else "")
 
 
+def notify_icon() -> str:
+    """The hydra as a PNG file for notify-send (written to the data dir once)."""
+    path = os.path.join(DATA_DIR, "notification-icon.png")
+    if not os.path.exists(path):
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(base64.b64decode(APP_ICON_PNG[128]))
+    return path
+
+
 def desktop_notify(title: str, message: str) -> None:
     """A desktop notification that closes by itself after NOTIFY_TIMEOUT_S. Doesn't wait
     for the notification server: it's called on the UI thread when a job ends."""
     if NOTIFY_SEND:
-        cmd = [NOTIFY_SEND, "-a", "Hydra Flasher", "-t", str(NOTIFY_TIMEOUT_S * 1000),
-               title, message]
 
         def run():
             try:
+                # The body is markup to most notification servers: a file name with
+                # "&" or "<" would garble it
+                cmd = [NOTIFY_SEND, "-a", "Hydra Flasher", "-i", notify_icon(),
+                       "-t", str(NOTIFY_TIMEOUT_S * 1000),
+                       title, html.escape(message, quote=False)]
                 subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                timeout=30)
             except (OSError, subprocess.SubprocessError):
@@ -1389,6 +1409,7 @@ class HydraUI(ctk.CTk):
         spispeed = self.cfg.get("spispeed", "16M")
 
         self.sudo_password: Optional[str] = None
+        self._dialog_open = False  # a zenity/kdialog file dialog is open
         self.available_chips = ["Auto-detect"]
         # Per socket (index = CS number)
         self.slots: List[Optional[dict]] = [None] * self.num_slots
@@ -2919,7 +2940,8 @@ class HydraUI(ctk.CTk):
         self.after(120, self._tick)
 
     def notify(self, title: str, message: str):
-        if self.notify_var.get():
+        # Only while you look elsewhere: with the window focused the result is in view
+        if self.notify_var.get() and self.focus_displayof() is None:
             desktop_notify(title, message)
 
     human_size = staticmethod(human_size)
@@ -4280,25 +4302,84 @@ class HydraUI(ctk.CTk):
 
     # ====================== File Dialogs ======================
     def _run_linux_dialog(
-        self, commands: List[List[str]]
+        self, kdialog: List[str], zenity: List[str]
     ) -> Tuple[bool, Optional[str]]:
-        """Try zenity/kdialog. Returns (a dialog was shown, selected path)."""
+        """Try the desktop's file dialog (kdialog first on KDE, else zenity first).
+        Returns (a dialog was shown, selected path)."""
+        if self._dialog_open:  # a shortcut while one is open: it isn't modal to us
+            return True, None
+        # Transient for this window (X11 window id): stays above it
+        kdialog = ["kdialog", "--attach", str(int(self.wm_frame(), 16))] + kdialog
+        zenity = ["zenity", "--file-selection"] + zenity
+        commands = [zenity, kdialog]
+        if "KDE" in os.environ.get("XDG_CURRENT_DESKTOP", "").upper():
+            commands.reverse()
         for cmd in commands:
             if not shutil.which(cmd[0]):
                 continue
             started = time.monotonic()
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True)
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
             except Exception:
                 continue
-            if (result.returncode != 0 and result.stderr.strip()
+            stdout, stderr = self._wait_for_dialog(proc)
+            if (proc.returncode != 0 and stderr.strip()
                     and time.monotonic() - started < 1.0):
                 # Failed to start (missing library, no display): a cancelled dialog
                 # takes longer, so try the next one instead of doing nothing
                 continue
-            path = result.stdout.strip() if result.returncode == 0 else ""
+            path = stdout.strip() if proc.returncode == 0 else ""
             return True, path or None
         return False, None
+
+    def _wait_for_dialog(self, proc: subprocess.Popen) -> Tuple[str, str]:
+        """Wait for a zenity/kdialog process without freezing the window: it keeps
+        drawing and scanning, while a grab makes it ignore clicks and keys."""
+        out: Dict[str, str] = {}
+        reader = threading.Thread(
+            target=lambda: out.update(zip(("stdout", "stderr"), proc.communicate())),
+            daemon=True,
+        )
+        reader.start()
+        done = tkinter.BooleanVar(master=self, value=False)
+
+        def poll():
+            if reader.is_alive():
+                self.after(50, poll)
+            else:
+                done.set(True)
+
+        blocker = tkinter.Frame(self, width=1, height=1)
+        blocker.place(x=0, y=0)
+        self._dialog_open = True
+        try:
+            self.update_idletasks()
+            try:
+                blocker.grab_set()
+            except tkinter.TclError:  # window not viewable (minimised)
+                pass
+            poll()
+            self.wait_variable(done)
+        except tkinter.TclError:  # the window was closed meanwhile
+            pass
+        finally:
+            self._dialog_open = False
+            try:
+                blocker.destroy()
+            except tkinter.TclError:
+                pass
+        reader.join()
+        return out.get("stdout") or "", out.get("stderr") or ""
+
+    @staticmethod
+    def _kdialog_filter(filetypes) -> str:
+        """Tk filetypes as kdialog's filter: "Images (*.bin *.rom);;All files (*)"."""
+        return ";;".join(
+            f"{label} ({' '.join('*' if p == '*.*' else p for p in exts.split())})"
+            for label, exts in filetypes
+        )
 
     def _ask_open_file(self, title: str, filetypes):
         initial = self.last_dir
@@ -4308,16 +4389,13 @@ class HydraUI(ctk.CTk):
             patterns = " ".join(
                 p for _, exts in filetypes for p in exts.split() if p != "*.*"
             )
-            zenity = [
-                "zenity",
-                "--file-selection",
-                f"--title={title}",
-                f"--filename={initial}/",
-            ]
+            zenity = [f"--title={title}", f"--filename={initial}/"]
             if patterns and patterns != "*":
                 zenity += [f"--file-filter={patterns}", "--file-filter=*"]
             shown, path = self._run_linux_dialog(
-                [zenity, ["kdialog", "--getopenfilename", initial, f"--title={title}"]]
+                ["--getopenfilename", initial, self._kdialog_filter(filetypes),
+                 f"--title={title}"],
+                zenity,
             )
         if not shown:
             path = filedialog.askopenfilename(
@@ -4336,16 +4414,9 @@ class HydraUI(ctk.CTk):
         if self.is_linux:
             target = os.path.join(initial, initialfile or "")
             shown, path = self._run_linux_dialog(
-                [
-                    [
-                        "zenity",
-                        "--file-selection",
-                        "--save",
-                        f"--title={title}",
-                        f"--filename={target}",
-                    ],
-                    ["kdialog", "--getsavefilename", target, f"--title={title}"],
-                ]
+                ["--getsavefilename", target, self._kdialog_filter(filetypes),
+                 f"--title={title}"],
+                ["--save", f"--title={title}", f"--filename={target}"],
             )
         if not shown:
             path = filedialog.asksaveasfilename(
@@ -4365,16 +4436,8 @@ class HydraUI(ctk.CTk):
         shown = False
         if self.is_linux:
             shown, path = self._run_linux_dialog(
-                [
-                    [
-                        "zenity",
-                        "--file-selection",
-                        "--directory",
-                        f"--title={title}",
-                        f"--filename={initial}/",
-                    ],
-                    ["kdialog", "--getexistingdirectory", initial, f"--title={title}"],
-                ]
+                ["--getexistingdirectory", initial, f"--title={title}"],
+                ["--directory", f"--title={title}", f"--filename={initial}/"],
             )
         if not shown:
             path = filedialog.askdirectory(title=title, initialdir=initial)

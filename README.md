@@ -40,7 +40,7 @@ Get the newest **[release](https://github.com/Waffelo/HydraFlasher/releases/late
 | System | File |
 | --- | --- |
 | Windows | `HydraFlasher-Setup-<version>.exe` (installer) or `HydraFlasher-<version>-portable.exe` (no install) |
-| Linux | `HydraFlasher-<version>-x86_64.AppImage`: `chmod +x`, then run it |
+| Linux | `HydraFlasher-<version>-x86_64.AppImage`: `chmod +x`, then run it. Needs FUSE (`sudo apt install fuse3` on Debian/Ubuntu), or start it with `--appimage-extract-and-run` |
 
 You still need `flashprog` (or `flashrom`); HydraFlasher asks for it on the first
 start if it can't find it. The Pico firmware has its own releases (`fw-v…`), which

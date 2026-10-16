@@ -2,6 +2,20 @@
 
 Each app release (`app-v<version>` tag) publishes the section of its version as the GitHub release notes, next to the Windows installer, the portable `.exe` and the Linux AppImage; CI refuses a tag without one. Keep the headings as `## <version> · <date>`. The Pico firmware has its own changelog: [firmware/CHANGELOG.md](firmware/CHANGELOG.md).
 
+## Unreleased
+
+### Fixed
+- **Linux AppImage: the buttons that open a file did nothing.** The AppImage's bundled libraries leaked into every program it started, and KDE's file dialog (kdialog) couldn't start with them. Programs started from the app (file dialog, flashprog, notify-send…) now use the system's libraries, and if the desktop's file dialog still fails, HydraFlasher opens its own.
+- **Notifications stayed on screen** until clicked (AppImage): they close after 6 seconds now.
+- **Status LEDs under sudo** (when your user can't open the serial port) didn't work in the packaged app.
+
+### Changed
+- A successful probe (or the automatic identify of a new chip) no longer shows a notification; a failed one still does.
+- Notifications only appear while the HydraFlasher window isn't focused, and show the hydra icon.
+- File dialogs on Linux: KDE gets its own dialog (kdialog) even when zenity is installed, with the image filter, and above the HydraFlasher window. The window keeps drawing and scanning while a dialog is open.
+- Settings show the git commit of packaged builds next to the version.
+- The AppImage needs FUSE (`fuse3`): the 1.0.0 notes said `libfuse2`. Without it, start it with `--appimage-extract-and-run`.
+
 ## 1.0.0 · 2026-10-15
 
 **First packaged release.** HydraFlasher now comes as a Windows installer, a portable Windows `.exe` and a Linux AppImage, so Python isn't needed any more.
