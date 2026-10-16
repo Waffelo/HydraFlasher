@@ -1,4 +1,4 @@
 customtkinter>=5.2,<6  # tested with 5.2.2
 pyserial
-plyer  # optional: desktop notifications
+plyer  # optional: desktop notifications on Windows (Linux uses notify-send)
 tkinterdnd2  # optional: drag and drop images onto sockets

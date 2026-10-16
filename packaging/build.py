@@ -37,6 +37,19 @@ def app_version() -> str:
     return re.search(r'^APP_VERSION = "([^"]+)"', src, re.M).group(1)
 
 
+def git_commit() -> str:
+    """"9e2c15f", "9e2c15f modified" with local changes, "" without git."""
+    def git(*args):
+        return subprocess.run(["git", "-C", ROOT, *args], capture_output=True,
+                              text=True).stdout.strip()
+    try:
+        head = git("rev-parse", "--short", "HEAD")
+        changed = git("status", "--porcelain", "--untracked-files=no")
+    except OSError:
+        return ""
+    return head + (" modified" if head and changed else "")
+
+
 def run(cmd, **kw):
     print("$", " ".join(str(c) for c in cmd), flush=True)
     subprocess.run(cmd, check=True, **kw)
@@ -57,6 +70,12 @@ def pyinstaller(name: str, onefile: bool, icon: str, hidden: list):
         cmd += ["--collect-all", "tkinterdnd2"]
     except ImportError:
         print("tkinterdnd2 not installed: building without drag and drop")
+    # The git commit, shown next to the version in settings (app_commit())
+    commit = os.path.join(BUILD, "commit.txt")
+    os.makedirs(BUILD, exist_ok=True)
+    with open(commit, "w", encoding="utf-8") as f:
+        f.write(git_commit())
+    cmd += ["--add-data", f"{commit}{os.pathsep}."]
     for module in hidden:
         cmd += ["--hidden-import", module]
     cmd += ["--onefile"] if onefile else ["--onedir"]
