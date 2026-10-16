@@ -150,7 +150,7 @@ PICO_VID = 0x2E8A  # firmware 1.3+: Raspberry Pi's ID, product "HydraFlasher"
 
 # The app's own version (semantic: minor for features, patch for fixes); the firmware
 # has its own (FW_VERSION in firmware/main.c)
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 # Firmware updates: GitHub Releases tagged fw-v<version> carry the .uf2 (CI builds them)
 GITHUB_REPO = "Waffelo/HydraFlasher"
