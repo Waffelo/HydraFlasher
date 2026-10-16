@@ -4,17 +4,18 @@ Each release (`fw-v<version>` tag) publishes the section of its version as the G
 
 To update a Pico running HydraFlasher firmware: in the app, **settings → firmware → latest**. A blank Pico, or one with other firmware: hold **BOOTSEL** while plugging it in, then the same (see the [user guide](https://github.com/Waffelo/HydraFlasher/wiki/Settings#updating-the-firmware)).
 
-## Unreleased (1.3)
+## 1.3 · 2026-10-16
 
-**Its own USB identity, done properly.** The Pico now uses Raspberry Pi's USB vendor ID with the product ID Raspberry Pi assigns to Pico SDK serial devices, instead of TinyUSB's example vendor ID `0xCAFE`, which isn't meant for distributed devices.
+**Its own USB identity, done properly.** The Pico now uses Raspberry Pi's USB vendor ID with the product ID Raspberry Pi assigns to Pico SDK serial devices, instead of TinyUSB's example vendor ID `0xCAFE`, which isn't meant for distributed devices. Nothing else changed: flashing, verifying, the socket detection and the LEDs work as in 1.2.
 
 ### Changed
-- **USB ID `2E8A:000A`** (was `CAFE:4001`). The product name stays "HydraFlasher", which is how the app finds the Pico.
+- **USB ID `2E8A:000A`** (was `CAFE:4001`): Raspberry Pi's shared ID for Pico SDK serial (CDC) devices, which [their rules](https://github.com/raspberrypi/usb-pid) ask such devices to use. The product name stays "HydraFlasher", which is how the app finds the Pico.
 - **Serial number from the Pico's unique flash ID** (was `621621` on every board), so two Picos get different names in `/dev/serial/by-id/` and on Windows.
 
 ### Compatibility
-- Needs an app from the same day or later to be selected automatically after the update (older apps still find it by its name, with a lower score).
+- **Update with app 1.1.0 or newer.** App 1.0.0 still finds and uses a Pico with 1.3, but loses it during a firmware update (it looks for the old ID when the Pico restarts).
 - On Windows, the Pico gets a new COM port number once, as it's a new device to Windows.
+- Works with flashprog and flashrom as before (`serprog:dev=…,cs=<n>`).
 
 ## 1.2 · 2026-10-15
 
