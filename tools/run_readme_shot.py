@@ -99,7 +99,24 @@ def s3():
         app.after(50, s3)
         return
     app.update()
-    subprocess.run(["import", "-window", str(H.x11_toplevel(app.winfo_id())), shot])
+    capture(os.path.join(work, "dark.png"))
+    app._toggle_theme()  # the same moment in light mode, shown side by side
+    app.after(400, s4)
+
+
+def capture(path):
+    # The window manager's frame: the window with its title bar
+    subprocess.run(["import", "-window", app.wm_frame(), path])
+
+
+def s4():
+    app.update()
+    capture(os.path.join(work, "light.png"))
+    subprocess.run([
+        "magick", "-background", "#101010",
+        os.path.join(work, "dark.png"), os.path.join(work, "light.png"),
+        "-bordercolor", "#101010", "-border", "16", "+append", shot,
+    ])
     app._queue.clear()
     app._abort_requested = True
     if app._proc:

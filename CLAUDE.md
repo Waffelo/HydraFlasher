@@ -24,7 +24,7 @@ cd firmware && ./build.sh flash     # build + copy to a Pico in BOOTSEL; reboots
 tests/run_all.sh                    # GUI tests with a fake Pico and fake flashprog, on a hidden display
 VISIBLE=1 tests/run_all.sh          # same, but the windows open on your desktop
 tests/run_all.sh run_onebyone.py    # a single test
-python3 tools/run_readme_shot.py . screenshot.png   # regenerate the README screenshot
+python3 tools/run_readme_shot.py . screenshot.png   # regenerate the README screenshot (dark + light side by side; hidden display, ImageMagick)
 python3 tools/draw_pinout.py firmware/pinout.png    # regenerate the pinout drawing
 python3 tools/make_icons.py                         # icons from logo-mark.png (.ico, .png, APP_ICON_PNG)
 python packaging/build.py                           # app packages for this OS into release/ (needs a display)
