@@ -12,7 +12,8 @@ Each app release (`app-v<version>` tag) publishes the section of its version as 
 ### Changed
 - A successful probe (or the automatic identify of a new chip) no longer shows a notification; a failed one still does.
 - Notifications only appear while the HydraFlasher window isn't focused, and show the hydra icon.
-- File dialogs on Linux: KDE gets its own dialog (kdialog) even when zenity is installed, with the image filter, and above the HydraFlasher window. The window keeps drawing and scanning while a dialog is open.
+- **The taskbar entry lights up** when a job ends while you're in another window (Linux: until you switch to HydraFlasher; Windows: it flashes). Independent of the notification setting.
+- File dialogs on Linux: KDE gets its own dialog (kdialog) even when zenity is installed, with the image filter, and above the HydraFlasher window (it was attached to the window manager's frame before, which KDE ignores). The window keeps drawing and scanning while a dialog is open.
 - Settings show the git commit of packaged builds next to the version.
 - The AppImage needs FUSE (`fuse3`): the 1.0.0 notes said `libfuse2`. Without it, start it with `--appimage-extract-and-run`.
 
