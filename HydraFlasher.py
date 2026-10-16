@@ -1498,6 +1498,7 @@ class HydraUI(ctk.CTk):
         self.sudo_password: Optional[str] = None
         self._dialog_open = False  # a zenity/kdialog file dialog is open
         self._urgent = False  # the taskbar entry is highlighted (X11 urgency hint)
+        self._temp_images: Set[str] = set()  # padded/truncated copies (_temp_image)
         self.available_chips = ["Auto-detect"]
         # Per socket (index = CS number)
         self.slots: List[Optional[dict]] = [None] * self.num_slots
@@ -3668,8 +3669,10 @@ class HydraUI(ctk.CTk):
     def _finish_job(self, ok: bool, msg: str):
         self._report_job(ok, msg)
         self._queue_continue()
-        if self._sockets_pending and not (self.busy or self._queue):
-            self._apply_auto_sockets()
+        if not (self.busy or self._queue):
+            self._drop_temp_images()
+            if self._sockets_pending:
+                self._apply_auto_sockets()
 
     def _report_job(self, ok: bool, msg: str):
         self.busy = False
@@ -4563,12 +4566,27 @@ class HydraUI(ctk.CTk):
             self.last_dir = path
         return path or None
 
+    def _temp_image(self, name: str) -> str:
+        """Path for a padded/truncated copy of an image, under the given name (it's
+        shown in the confirmation and the log). Deleted by _drop_temp_images once no
+        job waits for it, so nothing is left next to the original."""
+        folder = tempfile.mkdtemp(prefix="hydraflasher-")
+        path = os.path.join(folder, name)
+        self._temp_images.add(path)
+        return path
+
+    def _drop_temp_images(self):
+        """Delete the padded/truncated copies; only call while no job runs or waits."""
+        for path in self._temp_images:
+            shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+        self._temp_images.clear()
+
     def _adjust_file_size(self, path: str, chip_size: int) -> Optional[str]:
         file_size = os.path.getsize(path)
         if file_size == chip_size:
             return path
 
-        base, ext = os.path.splitext(path)
+        base, ext = os.path.splitext(os.path.basename(path))
         sizes = f"File is {human_size(file_size)}, chip is {human_size(chip_size)}."
         try:
             if file_size > chip_size:
@@ -4578,10 +4596,12 @@ class HydraUI(ctk.CTk):
                     yes=f"Truncate to {human_size(chip_size)}",
                     no="Cancel",
                 ):
-                    adjusted = f"{base}_truncated{ext}"
+                    adjusted = self._temp_image(f"{base}_truncated{ext}")
                     with open(path, "rb") as fin, open(adjusted, "wb") as fout:
                         fout.write(fin.read(chip_size))
-                    self.log_note(f"Created truncated file: {adjusted}", "info")
+                    self.log_note(
+                        f"Truncated to {human_size(chip_size)} (a temporary copy, "
+                        "deleted once the queue is done)", "info")
                     return adjusted
             else:
                 if self._ask(
@@ -4590,11 +4610,13 @@ class HydraUI(ctk.CTk):
                     yes=f"Pad to {human_size(chip_size)}",
                     no="Cancel",
                 ):
-                    adjusted = f"{base}_padded{ext}"
+                    adjusted = self._temp_image(f"{base}_padded{ext}")
                     with open(path, "rb") as fin, open(adjusted, "wb") as fout:
                         fout.write(fin.read())
                         fout.write(b"\xFF" * (chip_size - file_size))
-                    self.log_note(f"Created padded file: {adjusted}", "info")
+                    self.log_note(
+                        f"Padded to {human_size(chip_size)} with 0xFF (a temporary copy, "
+                        "deleted once the queue is done)", "info")
                     return adjusted
         except OSError as e:
             self._alert("Error", f"Could not create adjusted image:\n{e}", error=True)
@@ -5032,6 +5054,8 @@ class HydraUI(ctk.CTk):
             no="Cancel",
             danger=True,
         ):
+            if not (self.busy or self._queue):
+                self._drop_temp_images()
             return
         if cs == CS_ALL and self._one_by_one():
             # One job per socket: the first starts, the rest wait in the queue
@@ -6498,6 +6522,7 @@ class HydraUI(ctk.CTk):
             self._set_led(LED["IDLE"], wait=True)  # before the process ends
         if self._log_after_id:
             self.after_cancel(self._log_after_id)
+        self._drop_temp_images()
         self.save_config()
         self.destroy()
 
