@@ -1,4 +1,6 @@
 import csv
+import ctypes
+import functools
 import json
 import os
 import platform
@@ -971,6 +973,91 @@ def desktop_notify(title: str, message: str) -> None:
             pass
 
 
+class _XWMHints(ctypes.Structure):
+    _fields_ = [
+        ("flags", ctypes.c_long), ("input", ctypes.c_int),
+        ("initial_state", ctypes.c_int), ("icon_pixmap", ctypes.c_ulong),
+        ("icon_window", ctypes.c_ulong), ("icon_x", ctypes.c_int),
+        ("icon_y", ctypes.c_int), ("icon_mask", ctypes.c_ulong),
+        ("window_group", ctypes.c_ulong),
+    ]
+
+
+@functools.lru_cache(maxsize=1)
+def _xlib():
+    """libX11 (Tk's own, already loaded) with the few calls used here."""
+    x = ctypes.cdll.LoadLibrary("libX11.so.6")
+    ptr, xid = ctypes.c_void_p, ctypes.c_ulong
+    x.XOpenDisplay.restype, x.XOpenDisplay.argtypes = ptr, [ctypes.c_char_p]
+    x.XQueryTree.argtypes = [ptr, xid, ctypes.POINTER(xid), ctypes.POINTER(xid),
+                             ctypes.POINTER(ptr), ctypes.POINTER(ctypes.c_uint)]
+    x.XGetWMHints.restype = ctypes.POINTER(_XWMHints)
+    x.XGetWMHints.argtypes = [ptr, xid]
+    x.XSetWMHints.argtypes = [ptr, xid, ctypes.POINTER(_XWMHints)]
+    for name in ("XFree", "XFlush", "XCloseDisplay"):
+        getattr(x, name).argtypes = [ptr]
+    return x
+
+
+@contextmanager
+def _x_display():
+    x = _xlib()
+    display = x.XOpenDisplay(None)
+    if not display:
+        raise OSError("no X display")
+    try:
+        yield x, display
+    finally:
+        x.XCloseDisplay(display)
+
+
+def x11_toplevel(inner: int) -> int:
+    """The X11 window the window manager manages for a Tk toplevel, from its
+    winfo_id(): Tk's wrapper, the parent. (wm frame returns the window manager's
+    decoration frame around it instead, which ignores hints and dialogs.)"""
+    with _x_display() as (x, display):
+        root, parent = ctypes.c_ulong(), ctypes.c_ulong()
+        children, count = ctypes.c_void_p(), ctypes.c_uint()
+        if not x.XQueryTree(display, inner, ctypes.byref(root), ctypes.byref(parent),
+                            ctypes.byref(children), ctypes.byref(count)):
+            raise OSError("XQueryTree failed")
+        if children:
+            x.XFree(children)
+        return parent.value
+
+
+def set_x11_urgency(window: int, urgent: bool) -> None:
+    """Set or clear the urgency hint (WM_HINTS) of an X11 toplevel: the taskbar
+    highlights its entry (KDE, GNOME, XFCE…). Tk has no command for it."""
+    urgency_hint = 1 << 8
+    with _x_display() as (x, display):
+        current = x.XGetWMHints(display, window)  # keep what Tk set (input, group)
+        hints = _XWMHints.from_buffer_copy(current.contents) if current else _XWMHints()
+        if current:
+            x.XFree(current)
+        hints.flags = hints.flags | urgency_hint if urgent else hints.flags & ~urgency_hint
+        x.XSetWMHints(display, window, ctypes.byref(hints))
+        x.XFlush(display)
+
+
+def flash_taskbar(hwnd: int) -> None:
+    """Windows: flash the taskbar button until the window comes to the front."""
+    import ctypes
+    from ctypes import wintypes
+
+    class FLASHWINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.UINT), ("hwnd", wintypes.HWND),
+            ("dwFlags", wintypes.DWORD), ("uCount", wintypes.UINT),
+            ("dwTimeout", wintypes.DWORD),
+        ]
+
+    flashw_tray, flashw_timernofg = 0x2, 0xC
+    info = FLASHWINFO(ctypes.sizeof(FLASHWINFO), hwnd,
+                      flashw_tray | flashw_timernofg, 0, 0)
+    ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))  # type: ignore[attr-defined]
+
+
 def rp2_drive_present() -> bool:
     """Cheap check (UI thread) for a Pico in bootloader mode: the RPI-RP2 drive."""
     system = platform.system()
@@ -1410,6 +1497,7 @@ class HydraUI(ctk.CTk):
 
         self.sudo_password: Optional[str] = None
         self._dialog_open = False  # a zenity/kdialog file dialog is open
+        self._urgent = False  # the taskbar entry is highlighted (X11 urgency hint)
         self.available_chips = ["Auto-detect"]
         # Per socket (index = CS number)
         self.slots: List[Optional[dict]] = [None] * self.num_slots
@@ -1539,6 +1627,8 @@ class HydraUI(ctk.CTk):
         self.bind("<Control-l>", lambda e: self._clear_log())
         self.bind("<Control-q>", lambda e: self._on_closing())
         self.bind("<Control-comma>", lambda e: self._toggle_settings())
+        # Back in the window: drop the taskbar highlight of a finished job
+        self.bind("<FocusIn>", self._clear_attention, add="+")
         # Esc stops jobs; with none running it leaves the settings page
         self.bind(
             "<Escape>",
@@ -2940,9 +3030,33 @@ class HydraUI(ctk.CTk):
         self.after(120, self._tick)
 
     def notify(self, title: str, message: str):
-        # Only while you look elsewhere: with the window focused the result is in view
-        if self.notify_var.get() and self.focus_displayof() is None:
+        """A job ended. Only while you look elsewhere (with the window focused the
+        result is in view): highlight the taskbar entry and, if on, a notification."""
+        if self.focus_displayof() is not None:
+            return
+        self._request_attention()
+        if self.notify_var.get():
             desktop_notify(title, message)
+
+    def _request_attention(self):
+        """Highlight the taskbar entry until the window is activated."""
+        try:
+            if self.is_windows:
+                flash_taskbar(int(self.wm_frame(), 16))  # stops in the foreground
+            elif self.is_linux:
+                set_x11_urgency(x11_toplevel(self.winfo_id()), True)
+                self._urgent = True
+        except Exception:  # no X11 library, unusual window manager: just no highlight
+            pass
+
+    def _clear_attention(self, _event=None):
+        """<FocusIn>: the window was activated, the highlight has done its job."""
+        if self._urgent:
+            self._urgent = False
+            try:
+                set_x11_urgency(x11_toplevel(self.winfo_id()), False)
+            except Exception:
+                pass
 
     human_size = staticmethod(human_size)
 
@@ -4309,7 +4423,11 @@ class HydraUI(ctk.CTk):
         if self._dialog_open:  # a shortcut while one is open: it isn't modal to us
             return True, None
         # Transient for this window (X11 window id): stays above it
-        kdialog = ["kdialog", "--attach", str(int(self.wm_frame(), 16))] + kdialog
+        try:
+            kdialog = ["--attach", str(x11_toplevel(self.winfo_id()))] + kdialog
+        except Exception:  # no X11 library: a free-standing dialog
+            pass
+        kdialog = ["kdialog"] + kdialog
         zenity = ["zenity", "--file-selection"] + zenity
         commands = [zenity, kdialog]
         if "KDE" in os.environ.get("XDG_CURRENT_DESKTOP", "").upper():
