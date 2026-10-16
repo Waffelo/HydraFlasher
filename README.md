@@ -86,4 +86,6 @@ which the app's settings page can download and install on the Pico.
 ## License
 
 GPL-3.0, see `LICENSE`. The firmware keeps its upstream licenses
-(`firmware/COPYING`, `firmware/COPYING.CC-BY-SA`).
+(`firmware/COPYING`, `firmware/COPYING.CC-BY-SA`). The downloadable packages
+include the licenses of the software bundled with the app in
+`THIRD-PARTY-LICENSES.txt` (settings → version → **licenses**).

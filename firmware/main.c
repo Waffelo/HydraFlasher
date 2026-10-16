@@ -1,5 +1,5 @@
 /**
- * Further modified by Jakub heger <contact@waffelo.net>
+ * Further modified by Jakub Heger <contact@waffelo.net>
  * Copyright (C) 2021, Mate Kukri <km@mkukri.xyz>
  * Based on "pico-serprog" by Thomas Roth <code@stacksmashing.net>
  *

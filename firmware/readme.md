@@ -2,7 +2,7 @@
 
 [serprog](https://www.flashprog.org/Serprog) firmware for the Raspberry Pi Pico (RP2040) that serves **several SPI flash sockets from one Pico**. It's the programmer side of the [HydraFlasher](../README.md) GUI, but it also works on its own with plain flashprog or flashrom.
 
-It's based on [pico-serprog](https://github.com/stacksmashing/pico-serprog) by Thomas Roth ("stacksmashing"), improved by Mate Kukri ("kukrimate"), and modified for HydraFlasher by Jakub Heger.
+It's based on [pico-serprog](https://github.com/stacksmashing/pico-serprog) by Thomas Roth ("stacksmashing"), improved by Mate Kukri ("kukrimate"), taken from the [opensensor/pico-serprog](https://github.com/opensensor/pico-serprog) fork, and modified for HydraFlasher by Jakub Heger.
 
 ## What it adds to pico-serprog
 
@@ -29,7 +29,7 @@ It's based on [pico-serprog](https://github.com/stacksmashing/pico-serprog) by T
 | LED pass (green) | GP17 | 22 |
 | LED fail (red) | GP18 | 24 |
 
-All sockets share SCK, MOSI and MISO; each socket gets its own CS line, which idles high. The HydraFlasher GUI uses CS0 to CS3 by default; set `sockets` in its config to use up to all ten. The LEDs sit on the other side of the board, across from the CS lines. The LEDs are active high: the GPIO goes high to light one. At most one is lit at a time, and all are off at power-up.
+All sockets share SCK, MOSI and MISO; each socket gets its own CS line, which idles high. The HydraFlasher GUI shows as many sockets as are wired: with a 10 kΩ pull-up from each socket's CS line to 3V3, firmware 1.2 reports which lines are connected (command `0x24`). Without pull-ups, set the count on the GUI's settings page (1 to 10, default 4). The LEDs sit on the other side of the board, across from the CS lines. The LEDs are active high: the GPIO goes high to light one. At most one is lit at a time, and all are off at power-up.
 
 ![Pico pinout: SPI, chip selects, LEDs, 3V3 and GND](pinout.png)
 

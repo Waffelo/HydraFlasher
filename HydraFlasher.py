@@ -1,6 +1,10 @@
+# HydraFlasher: a GUI for flashing SPI flash chips with flashprog through a Pico.
+# Copyright (C) 2026 Jakub Heger <contact@waffelo.net>
+# SPDX-License-Identifier: GPL-3.0-or-later (see LICENSE)
 import csv
 import ctypes
 import functools
+import hashlib
 import json
 import os
 import platform
@@ -749,6 +753,12 @@ def blend(c1, c2, t: float):
     return "#" + "".join(f"{round(x * t + y * (1 - t)):02x}" for x, y in zip(a, b))
 
 
+def csv_text(text: str) -> str:
+    """A file name for the CSV flash log: one starting with = + - @ would run as a
+    formula when the log is opened in a spreadsheet, so it gets a leading '."""
+    return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+
 def read_flash_log(path: str) -> List[Dict[str, str]]:
     """The rows of the CSV flash log, oldest first ([] without one)."""
     try:
@@ -909,17 +919,30 @@ def latest_fw_release(timeout: float = 10) -> Optional[dict]:
         )
         if not asset:
             continue
+        url = asset.get("browser_download_url") or ""
+        if not url.startswith(f"{REPO_URL}/releases/download/"):
+            continue  # only files of this repository's releases, over HTTPS
+        digest = asset.get("digest") or ""  # "sha256:…" (GitHub adds it to uploads)
         rel = {
             "version": tag[len(FW_TAG_PREFIX) :],
             "tag": tag,
             "name": asset["name"],
-            "url": asset["browser_download_url"],
+            "url": url,
             "size": asset.get("size") or 0,
+            "sha256": digest[7:].lower() if digest.startswith("sha256:") else "",
             "date": (r.get("published_at") or "")[:10],
         }
         if best is None or version_key(rel["version"]) > version_key(best["version"]):
             best = rel
     return best
+
+
+def file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def app_commit() -> str:
@@ -1740,9 +1763,20 @@ class HydraUI(ctk.CTk):
             return {}
         try:
             with open(CONFIG_FILE, encoding="utf-8") as f:
-                return json.load(f)
+                cfg = json.load(f)
+            if isinstance(cfg, dict):
+                return cfg
         except Exception:
-            return {}
+            pass
+        # Unreadable: keep it aside instead of overwriting it at the next save
+        broken = CONFIG_FILE + ".broken"
+        try:
+            os.replace(CONFIG_FILE, broken)
+            print(f"Config unreadable, moved to {broken}; starting with defaults",
+                  file=sys.stderr)
+        except OSError:
+            pass
+        return {}
 
     def save_config(self):
         if not hasattr(self, "port_entry") or self.flashrom_path is None:
@@ -1777,8 +1811,12 @@ class HydraUI(ctk.CTk):
         )
         try:
             os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            # Write a copy, then swap it in: a crash or full disk mid-write can't
+            # leave a truncated config behind
+            tmp = CONFIG_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.cfg, f, indent=4)
+            os.replace(tmp, CONFIG_FILE)
         except Exception as e:
             print(f"Config save failed: {e}", file=sys.stderr)
 
@@ -4118,7 +4156,7 @@ class HydraUI(ctk.CTk):
             or "",
             "chip": slot["name"] if slot else "",
             "operation": operation,
-            "image": os.path.basename(image),
+            "image": csv_text(os.path.basename(image)),
             "image_crc32": f"{image_crc:08x}" if image_crc is not None else "",
             "result": "pass" if ok else "fail",
             "seconds": f"{seconds:.1f}",
@@ -4438,7 +4476,8 @@ class HydraUI(ctk.CTk):
             return True, None
         # Transient for this window (X11 window id): stays above it
         try:
-            kdialog = ["--attach", str(x11_toplevel(self.winfo_id()))] + kdialog
+            if self.winfo_ismapped():  # (the first-start flashprog prompt isn't)
+                kdialog = ["--attach", str(x11_toplevel(self.winfo_id()))] + kdialog
         except Exception:  # no X11 library: a free-standing dialog
             pass
         kdialog = ["kdialog"] + kdialog
@@ -5795,6 +5834,9 @@ class HydraUI(ctk.CTk):
             self._button(row, text, fn, color=T["soft"], width=90).pack(side="right")
         row = self._settings_row(panel, "version")
         w["version"] = self._settings_note(row, T["text"])
+        self._button(row, "licenses", self._open_licenses, color=T["soft"], width=90).pack(
+            side="right"
+        )
         row = self._settings_row(panel, "files")
         w["files"] = self._settings_note(row)
         row.pack_configure(pady=(3, 10))  # the panel's last row
@@ -5825,6 +5867,16 @@ class HydraUI(ctk.CTk):
     def _app_commit_loaded(self, commit: str):
         self._app_commit = commit
         self._refresh_settings()
+
+    def _open_licenses(self):
+        """HydraFlasher's licence; a package also has the bundled software's notices."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        for name in ("THIRD-PARTY-LICENSES.txt", "LICENSE"):
+            path = os.path.join(here, name)
+            if os.path.isfile(path):
+                self._open_path(path)
+                return
+        self._open_path(f"{REPO_URL}/blob/main/LICENSE")
 
     def _open_repo(self):
         try:
@@ -6324,7 +6376,10 @@ class HydraUI(ctk.CTk):
         folder = os.path.join(DATA_DIR, "firmware")
         os.makedirs(folder, exist_ok=True)
         dst = os.path.join(folder, os.path.basename(release["name"]))
-        if os.path.isfile(dst) and os.path.getsize(dst) == release.get("size"):
+        want = release.get("sha256", "")
+        if os.path.isfile(dst) and os.path.getsize(dst) == release.get("size") and (
+            not want or file_sha256(dst) == want
+        ):
             self._detail(f"already downloaded: {dst}")
             return dst
         req = urllib.request.Request(release["url"], headers={"User-Agent": "HydraFlasher"})
@@ -6339,6 +6394,14 @@ class HydraUI(ctk.CTk):
                 done += len(chunk)
                 if size:
                     self.after(0, setattr, self, "_pct", min(100.0, done * 100 / size))
+        if want and file_sha256(part) != want:
+            os.unlink(part)
+            raise ValueError(
+                f"{release['name']} doesn't match the checksum GitHub lists for it "
+                "(damaged download?) – not installed"
+            )
+        if want:
+            self._detail("checksum matches the release (SHA-256)")
         os.replace(part, dst)
         self._detail(f"saved to {dst}")
         return dst
@@ -6762,8 +6825,9 @@ def acquire_instance_lock():
 def self_test(out_path: str) -> int:
     """Check that a packaged build (PyInstaller) has everything it needs: Tk with a
     display, customtkinter's theme files, the icons, the serial port listing, the
-    optional packages, and that programs it starts get the system's libraries. Writes a JSON report to out_path; exit code 0 = good. Used by
-    CI on the .exe and the AppImage (a windowed .exe has no console to print to)."""
+    optional packages, and that programs it starts get the system's libraries.
+    Writes a JSON report to out_path; exit code 0 = good. Used by CI on the .exe and
+    the AppImage (a windowed .exe has no console to print to)."""
     report = {"app": APP_VERSION, "python": sys.version.split()[0], "ok": False}
     try:
         app = ctk.CTk()  # loads customtkinter's theme (bundled data files)
@@ -6779,6 +6843,12 @@ def self_test(out_path: str) -> int:
         if bundle and bundle in os.environ.get("LD_LIBRARY_PATH", ""):
             # kdialog, flashprog, notify-send… would load the bundled libraries
             raise RuntimeError("LD_LIBRARY_PATH for started programs points into the bundle")
+        here = os.path.dirname(os.path.abspath(__file__))
+        if bundle and not all(
+            os.path.isfile(os.path.join(here, n))
+            for n in ("LICENSE.txt", "THIRD-PARTY-LICENSES.txt")
+        ):
+            raise RuntimeError("the licence files aren't in the bundle")
         report["notifications"] = NOTIFICATIONS_AVAILABLE
         report["dnd"] = False
         if DND_AVAILABLE:
