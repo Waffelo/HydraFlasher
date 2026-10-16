@@ -71,6 +71,8 @@ else:
     CONFIG_FILE = os.path.expanduser("~/.config/hydra_flasher.json")
     DATA_DIR = os.path.expanduser("~/.local/share/hydra-flasher")
 FLASH_LOG = os.path.join(DATA_DIR, "flash_log.csv")
+HISTORY_FILTERS = ("all", "failures", "today")
+HISTORY_MAX_ROWS = 1000  # newest rows shown on the history page
 FLASH_LOG_FIELDS = [
     "time",
     "mode",
@@ -745,6 +747,15 @@ def blend(c1, c2, t: float):
     a = [int(c1[i : i + 2], 16) for i in (1, 3, 5)]
     b = [int(c2[i : i + 2], 16) for i in (1, 3, 5)]
     return "#" + "".join(f"{round(x * t + y * (1 - t)):02x}" for x, y in zip(a, b))
+
+
+def read_flash_log(path: str) -> List[Dict[str, str]]:
+    """The rows of the CSV flash log, oldest first ([] without one)."""
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            return [row for row in csv.DictReader(f) if row.get("time")]
+    except (OSError, csv.Error, UnicodeDecodeError):
+        return []
 
 
 def trunc(s: str, n: int) -> str:
@@ -1526,6 +1537,8 @@ class HydraUI(ctk.CTk):
         # Settings page; the newest firmware release on GitHub (see _check_release)
         self._settings_open = False
         self._settings_view = None
+        self._history_open = False  # the flash history page (_open_history)
+        self._history_view: Optional[ctk.CTkFrame] = None
         self._release: Optional[dict] = None
         self._release_checking = False
         self._binary_version = ""
@@ -1630,11 +1643,11 @@ class HydraUI(ctk.CTk):
         self.bind("<Control-comma>", lambda e: self._toggle_settings())
         # Back in the window: drop the taskbar highlight of a finished job
         self.bind("<FocusIn>", self._clear_attention, add="+")
-        # Esc stops jobs; with none running it leaves the settings page
+        # Esc stops jobs; with none running it leaves the settings or history page
         self.bind(
             "<Escape>",
-            lambda e: self._close_settings()
-            if self._settings_open and not (self.busy or self._queue)
+            lambda e: (self._close_settings(), self._close_history())
+            if self._page_open and not (self.busy or self._queue)
             else self.stop(),
         )
         # Clicking anywhere outside a text field releases focus so shortcuts work again
@@ -2126,7 +2139,7 @@ class HydraUI(ctk.CTk):
         self.one_by_one_var.trace_add("write", lambda *a: self._on_one_by_one())
         self._refresh_selection()  # show the one-by-one toggle if ALL is the target
         self._button(
-            row3, "flash log ▸", self._open_flash_log, color=T["soft"], width=120
+            row3, "flash log ▸", self._open_history, color=T["soft"], width=120
         ).pack(side="right")
         self._button(
             row3, "recent files ▸", self._show_recent_menu, color=T["soft"], width=130
@@ -2288,6 +2301,7 @@ class HydraUI(ctk.CTk):
         if self._logo_lbl:
             self._logo_lbl.configure(bg=tk_color(T["bg"]))
         self._apply_log_colors()
+        self._apply_history_colors()
         for card in self.cards.values():
             card._draw_led()
 
@@ -3069,7 +3083,7 @@ class HydraUI(ctk.CTk):
         return self.cs_map[self.cs_display_var.get()]
 
     def _shortcut(self, fn: Callable):
-        if self._settings_open:  # the operations act on the hidden main view
+        if self._page_open:  # the operations act on the hidden main view
             return
         # Don't hijack Ctrl+V (paste) etc. while the user is typing in a text field
         try:
@@ -3728,6 +3742,7 @@ class HydraUI(ctk.CTk):
             self._set_led(LED["FAILED"])
         self.save_config()
         self._refresh_settings()
+        self._refresh_history()
 
     @staticmethod
     def _job_op(entry: dict) -> str:
@@ -4121,23 +4136,19 @@ class HydraUI(ctk.CTk):
             except OSError as e:
                 self._detail(f"⚠ could not write flash log: {e}", "warning")
 
-    def _open_flash_log(self):
-        if not os.path.exists(FLASH_LOG):
-            self._alert(
-                "Flash log", f"No entries yet.\nIt will be written to:\n{FLASH_LOG}"
-            )
-            return
+    def _open_path(self, path: str):
+        """Open a file or folder in the desktop's default app."""
         try:
             if self.is_windows:
-                os.startfile(FLASH_LOG)  # type: ignore[attr-defined]
+                os.startfile(path)  # type: ignore[attr-defined]
             else:
                 subprocess.Popen(
-                    ["xdg-open" if self.is_linux else "open", FLASH_LOG],
+                    ["xdg-open" if self.is_linux else "open", path],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
         except Exception:
-            self._alert("Flash log", FLASH_LOG)
+            self._alert("Open", path)
 
     # ====================== Pico-side checks (CRC) ======================
     def _crc_verify(
@@ -5402,6 +5413,194 @@ class HydraUI(ctk.CTk):
             title=f"Verify all chips against {os.path.basename(path)}",
         )
 
+    # ====================== Flash history page ======================
+    # The CSV flash log (one row per socket and operation) as a table, in place of
+    # the main view like the settings page. The file stays the record.
+    def _open_history(self):
+        if self._history_open:
+            return
+        self._close_settings()
+        if self._history_view is None:
+            self._build_history_view()
+        self._hide_main_view()
+        self._history_view.pack(fill="both", expand=True)
+        self._history_open = True
+        self._refresh_history()
+
+    def _close_history(self):
+        if not self._history_open:
+            return
+        self._history_view.pack_forget()
+        self._show_main_view()
+        self._history_open = False
+
+    def _build_history_view(self):
+        view = ctk.CTkFrame(self._ui_root, fg_color="transparent")
+        self._history_view = view
+        top = ctk.CTkFrame(view, fg_color="transparent")
+        top.pack(fill="x", pady=(12, 0))
+        self._button(top, "← back", self._close_history, width=90).pack(side="left")
+        ctk.CTkLabel(
+            top, text="flash history", font=self.fonts["bold"], text_color=T["text"]
+        ).pack(side="left", padx=(14, 0))
+        ctk.CTkLabel(
+            top, text="every write and verify · esc to go back",
+            font=self.fonts["small"], text_color=T["faint"],
+        ).pack(side="right")
+        bar = ctk.CTkFrame(view, fg_color="transparent")
+        bar.pack(fill="x", pady=(10, 6))
+        ctk.CTkLabel(
+            bar, text="show", font=self.fonts["normal"], text_color=T["dim"]
+        ).pack(side="left", padx=(4, 6))
+        self._history_filter = ctk.StringVar(value=HISTORY_FILTERS[0])
+        combo = self._combo(bar, list(HISTORY_FILTERS), self._history_filter, 110)
+        combo.configure(command=lambda _v: self._refresh_history())
+        combo.pack(side="left")
+        self._history_summary = ctk.CTkLabel(
+            bar, text="", anchor="w", font=self.fonts["normal"], text_color=T["dim"]
+        )
+        self._history_summary.pack(side="left", padx=(12, 0), fill="x", expand=True)
+        self._button(bar, "clear…", self._clear_history, color=T["soft"], width=80).pack(
+            side="right"
+        )
+        self._button(
+            bar, "open folder", lambda: self._open_path(DATA_DIR), color=T["soft"],
+            width=110,
+        ).pack(side="right", padx=(0, 6))
+        self._button(
+            bar, "export CSV…", self._export_history, color=T["soft"], width=120
+        ).pack(side="right", padx=(0, 6))
+        panel = self._panel(view)
+        panel.pack(fill="both", expand=True, pady=(0, 12))
+        self._history_text = ctk.CTkTextbox(
+            panel, font=self.fonts["log"], wrap="none", fg_color=T["panel"],
+            text_color=T["text"], border_width=0, corner_radius=8,
+            scrollbar_button_color=T["border"],
+            scrollbar_button_hover_color=T["border_hi"],
+        )
+        self._history_text.pack(fill="both", expand=True, padx=2, pady=2)
+        self._apply_history_colors()
+
+    def _apply_history_colors(self):
+        """Plain Tk tag colours of the table (re-run by _apply_theme)."""
+        if self._history_view is None:
+            return
+        for tag, color in LOG_COLORS.items():
+            self._history_text.tag_config(tag, foreground=tk_color(color))
+
+    def _history_rows(self) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+        """(all rows, the rows the filter shows), newest first."""
+        rows = read_flash_log(FLASH_LOG)[::-1]
+        which = self._history_filter.get()
+        if which == "failures":
+            shown = [r for r in rows if r.get("result") != "pass"]
+        elif which == "today":
+            today = time.strftime("%Y-%m-%d")
+            shown = [r for r in rows if r.get("time", "").startswith(today)]
+        else:
+            shown = rows
+        return rows, shown
+
+    def _history_socket(self, socket: str) -> str:
+        """"CS1" from the file, named as the log names it now: "CS1 EC"."""
+        m = re.fullmatch(r"CS(\d+)", socket or "")
+        return self._sock(int(m.group(1))) if m else socket or "?"
+
+    def _refresh_history(self):
+        """Fill in the history page (only while it's shown)."""
+        if not self._history_open:
+            return
+        rows, shown = self._history_rows()
+        failed = sum(r.get("result") != "pass" for r in rows)
+        if rows:
+            summary = f"{len(rows)} entries · {failed} failed · since {rows[-1]['time'][:10]}"
+        else:
+            summary = "no entries yet"
+        if len(shown) != len(rows):
+            summary = f"{len(shown)} shown · " + summary
+        self._history_summary.configure(text=summary)
+
+        sock_w = max([6] + [len(self._history_socket(r.get("socket", ""))) for r in shown])
+        cols = (("time", 16), ("socket", sock_w), ("chip", 16), ("operation", 9),
+                ("image", 30))
+        tb = self._history_text
+        tb.configure(state="normal")
+        tb.delete("1.0", "end")
+        head = "  ".join(f"{n:<{w}}" for n, w in cols) + "  result  took"
+        tb.insert("end", head + "\n", "dim")
+        for r in shown[:HISTORY_MAX_ROWS]:
+            try:
+                took = fmt_duration(float(r.get("seconds") or 0))
+            except ValueError:
+                took = ""
+            batch = f" #{r['batch']}" if r.get("batch") else ""
+            cells = [
+                r.get("time", "")[:16],
+                self._history_socket(r.get("socket", "")),
+                r.get("chip", "") or r.get("jedec", ""),
+                r.get("operation", "") + batch,
+                r.get("image", "") or "—",
+            ]
+            line = "  ".join(trunc(c, w).ljust(w) for c, (_, w) in zip(cells, cols))
+            ok = r.get("result") == "pass"
+            tb.insert("end", line + "  ")
+            tb.insert("end", "✓ pass" if ok else "✕ fail", "success" if ok else "error")
+            tb.insert("end", f"  {took}\n", "dim")
+        if len(shown) > HISTORY_MAX_ROWS:
+            tb.insert(
+                "end", f"… {len(shown) - HISTORY_MAX_ROWS} older entries: export the CSV\n",
+                "dim",
+            )
+        if not shown:
+            tb.insert(
+                "end", "nothing to show\n" if rows
+                else "Every write and verify is listed here.\n", "dim",
+            )
+        tb.configure(state="disabled")
+
+    def _export_history(self):
+        if not os.path.exists(FLASH_LOG):
+            self._alert("Export", "The flash log is empty.")
+            return
+        path = self._ask_save_file(
+            "Export flash log", ".csv", [("CSV", "*.csv"), ("All files", "*.*")],
+            initialfile=f"flash_log-{time.strftime('%Y-%m-%d')}.csv",
+        )
+        if not path:
+            return
+        try:
+            with self._log_lock:
+                shutil.copyfile(FLASH_LOG, path)
+        except OSError as e:
+            self._alert("Export", f"Could not save the flash log:\n{e}", error=True)
+            return
+        self.log_note(f"Flash log exported to {path}", "info")
+
+    def _clear_history(self):
+        rows = read_flash_log(FLASH_LOG)
+        if not rows:
+            self._alert("Clear", "The flash log is already empty.")
+            return
+        archive = os.path.join(DATA_DIR, f"flash_log-{time.strftime('%Y-%m-%d')}.csv")
+        if os.path.exists(archive):
+            archive = archive[:-4] + time.strftime("-%H%M%S") + ".csv"
+        if not self._ask(
+            "Clear flash history",
+            f"Start an empty flash log?\n\nThe {len(rows)} entries are kept in\n"
+            f"{os.path.basename(archive)} (open folder shows it).",
+            yes="Clear",
+            no="Cancel",
+        ):
+            return
+        try:
+            with self._log_lock:  # a running job may be writing a row
+                os.replace(FLASH_LOG, archive)
+        except OSError as e:
+            self._alert("Clear", f"Could not archive the flash log:\n{e}", error=True)
+            return
+        self.log_note(f"Flash log cleared; {len(rows)} entries archived in {archive}", "info")
+        self._refresh_history()
+
     # ====================== Settings page ======================
     # Replaces the sockets, flashing options and buttons (self._top_view); the status
     # line and the log stay visible below, so a firmware update shows its progress.
@@ -5411,16 +5610,10 @@ class HydraUI(ctk.CTk):
     def _open_settings(self):
         if self._settings_open:
             return
+        self._close_history()
         if self._settings_view is None:
             self._build_settings_view()
-        # Full page: the main view, status line, log and footer step aside. Their
-        # pack options are kept to put them back exactly (see _close_settings).
-        self._hidden_views = [
-            (w, w.pack_info())
-            for w in (self._top_view, self._status_line, self._log_panel, self._footer)
-        ]
-        for w, _ in self._hidden_views:
-            w.pack_forget()
+        self._hide_main_view()
         self._settings_view.pack(fill="both", expand=True)
         self._settings_open = True
         self._render_gear()
@@ -5433,13 +5626,31 @@ class HydraUI(ctk.CTk):
         if not self._settings_open:
             return
         self._settings_view.pack_forget()
+        self._show_main_view()
+        self._settings_open = False
+        self._render_gear()
+
+    def _hide_main_view(self):
+        """A full page (settings, history) takes over: the main view, status line,
+        log and footer step aside, their pack options kept (see _show_main_view)."""
+        self._hidden_views = [
+            (w, w.pack_info())
+            for w in (self._top_view, self._status_line, self._log_panel, self._footer)
+        ]
+        for w, _ in self._hidden_views:
+            w.pack_forget()
+
+    def _show_main_view(self):
         for w, info in self._hidden_views:
             info = {k: v for k, v in info.items() if k != "in"}
             # Plain Tk's pack: the saved paddings are already scaled, customtkinter's
             # pack() would scale them again on HiDPI screens
             tkinter.Pack.pack_configure(w, **info)
-        self._settings_open = False
-        self._render_gear()
+
+    @property
+    def _page_open(self) -> bool:
+        """The settings or the history page replaces the main view."""
+        return self._settings_open or self._history_open
 
     def _settings_row(self, panel, label: str) -> ctk.CTkFrame:
         # (winfo_children() isn't empty for a new CTkFrame: it holds its own canvas)

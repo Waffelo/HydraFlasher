@@ -4,6 +4,9 @@ Each app release (`app-v<version>` tag) publishes the section of its version as 
 
 ## Unreleased
 
+### New
+- **Flash history page** (**flash log ▸**): every write and verify as a table, newest first, with socket names and green/red results; filter all / failures / today; **export CSV…**, **open folder**, and **clear…**, which archives the old log as `flash_log-<date>.csv` instead of deleting it.
+
 ### Fixed
 - **Linux AppImage: the buttons that open a file did nothing.** The AppImage's bundled libraries leaked into every program it started, and KDE's file dialog (kdialog) couldn't start with them. Programs started from the app (file dialog, flashprog, notify-send…) now use the system's libraries, and if the desktop's file dialog still fails, HydraFlasher opens its own.
 - **Notifications stayed on screen** until clicked (AppImage): they close after 6 seconds now.
