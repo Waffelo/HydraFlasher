@@ -49,10 +49,10 @@ GitHub Actions builds the firmware on every push that touches `firmware/` (again
 **Releases.** Bump `FW_VERSION` in `main.c`, commit, then push a matching tag:
 
 ```sh
-git tag fw-v1.1 && git push origin fw-v1.1
+git tag fw-v<version> && git push origin fw-v<version>
 ```
 
-First add a `## <version> · <date>` section to [CHANGELOG.md](CHANGELOG.md) (new, changed, hardware, fixed, compatibility): it becomes the release notes, followed by GitHub's list of merged pull requests. The workflow checks that the tag matches `FW_VERSION` and that the changelog has the section, then publishes a GitHub Release with `hydraflasher-fw-<version>.uf2`. The HydraFlasher app's settings page offers the newest one as "latest", and can also install any `.uf2` file.
+First add a `## <version> · <date>` section to [CHANGELOG.md](CHANGELOG.md) (new, changed, hardware, fixed, compatibility): it becomes the release notes, followed by GitHub's list of merged pull requests. The workflow checks that the tag matches `FW_VERSION` and that the changelog has the section, then publishes a GitHub Release with `hydraflasher-fw-<version>.uf2` and its third-party notices (`NOTICE`). The HydraFlasher app's settings page offers the newest one as "latest", and can also install any `.uf2` file.
 
 ## Using it with flashprog or flashrom
 
@@ -116,7 +116,13 @@ Defined in `serprog.h`. Multi-byte values are little-endian; every command answe
 ## License
 
 As a lot of the code itself was heavily inspired/influenced by `stm32-vserprog`
-this code is licensed under GPLv3.
+this code is licensed under GPLv3 (see [COPYING](COPYING)).
 
-pinout.png is an original drawing for HydraFlasher (earlier versions used one
-based on Raspberry Pi Ltd's pico-pinout.svg, under CC BY-SA 4.0).
+A built `.uf2` also contains the Raspberry Pi Pico SDK (BSD-3-Clause), TinyUSB (MIT;
+`usb_descriptors.c`, `tusb_config.h` and `tinyusb_patched/cdc_device.c` are based on
+its files) and parts of the newlib C library. Their notices are in [NOTICE](NOTICE),
+which every firmware release also publishes next to the `.uf2`.
+
+pinout.png is an original drawing for HydraFlasher. Earlier versions used one
+based on Raspberry Pi Ltd's pico-pinout.svg, under CC BY-SA 4.0, which is why
+[COPYING.CC-BY-SA](COPYING.CC-BY-SA) is still here.

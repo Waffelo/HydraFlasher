@@ -18,7 +18,7 @@ mark = Image.open(os.path.join(ROOT, "logo-mark.png")).convert("RGBA")
 
 
 def square(size: int) -> Image.Image:
-    """The mark centred on a transparent square, scaled to fit (never enlarged
+    """The mark centerd on a transparent square, scaled to fit (never enlarged
     beyond its own 240 px)."""
     canvas = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
     canvas.alpha_composite(mark, ((256 - mark.width) // 2, (256 - mark.height) // 2))

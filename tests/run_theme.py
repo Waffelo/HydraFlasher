@@ -1,4 +1,4 @@
-"""Light/dark mode: default dark, toggle re-colours plain Tk parts and is saved."""
+"""Light/dark mode: default dark, toggle re-colors plain Tk parts and is saved."""
 import json
 import os
 import subprocess
@@ -50,17 +50,17 @@ def check(name, cond):
     print("PASS" if cond else "FAIL", name, flush=True)
 
 
-def colours(mode):
+def colors(mode):
     p = H.THEME_LIGHT if mode == "light" else H.THEME_DARK
     led = app.cards[2]._led  # empty socket
     fills = {led.itemcget(i, "fill") for i in led.find_all()}
     check(f"{mode}: appearance mode", H.ctk.get_appearance_mode().lower() == mode)
     check(f"{mode}: socket light canvas bg", led.cget("bg") == p["panel"])
-    check(f"{mode}: empty-socket light colour", p["led_empty"] in fills)
+    check(f"{mode}: empty-socket light color", p["led_empty"] in fills)
     check(f"{mode}: logo background", app._logo_lbl.cget("bg") == p["bg"])
-    check(f"{mode}: log text colours", tb.tag_cget("success", "foreground") == p["green"]
+    check(f"{mode}: log text colors", tb.tag_cget("success", "foreground") == p["green"]
           and tb.tag_cget("accent", "foreground") == p["accent"])
-    check(f"{mode}: menu colours", str(app.log_menu.cget("bg")) == p["panel_hi"])
+    check(f"{mode}: menu colors", str(app.log_menu.cget("bg")) == p["panel_hi"])
     other = "light" if mode == "dark" else "dark"
     check(f"{mode}: switch offers {other} mode", app.theme_button.cget("text") == f"{other} mode")
 
@@ -71,13 +71,13 @@ def s1():
     mode = "light" if start == "light" else "dark"
     if start == "none":
         check("default is dark", app.theme == "dark")
-    colours(mode)
+    colors(mode)
     subprocess.run(["import", "-window", app.wm_frame(), os.path.join(here, f"theme_{mode}.png")])
     # click the sun/moon
     app.theme_button._label.event_generate("<Button-1>")
     app.update()
     new = "dark" if mode == "light" else "light"
-    colours(new)
+    colors(new)
     check(f"theme '{new}' saved", json.load(open(H.CONFIG_FILE)).get("theme") == new)
     subprocess.run(["import", "-window", app.wm_frame(), os.path.join(here, f"theme_{new}_switched.png")])
     app.destroy()

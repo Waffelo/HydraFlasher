@@ -39,6 +39,17 @@ APPIMAGETOOL_SHA256 = "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3c
 BUNDLED_DISTS = ["customtkinter", "darkdetect", "pyserial", "plyer", "tkinterdnd2",
                  "pyinstaller"]
 LICENSES_NAME = "THIRD-PARTY-LICENSES.txt"
+# License texts of bundled software that its Python package doesn't carry
+# (tkinterdnd2's LICENSE only covers the wrapper, not the tkdnd library it ships)
+EXTRA_LICENSES = {"tkdnd (native drag and drop library, bundled by tkinterdnd2)":
+                  os.path.join(PKG, "licenses", "tkdnd.txt")}
+# tkinterdnd2's folder name for this platform's tkdnd build
+TKDND_PLATFORM = {
+    ("Linux", "x86_64"): "linux-x64", ("Linux", "aarch64"): "linux-arm64",
+    ("Windows", "AMD64"): "win-x64", ("Windows", "ARM64"): "win-arm64",
+    ("Windows", "x86"): "win-x86",
+    ("Darwin", "x86_64"): "osx-x64", ("Darwin", "arm64"): "osx-arm64",
+}.get((platform.system(), platform.machine()), "")
 
 
 def app_version() -> str:
@@ -64,16 +75,16 @@ def _section(title: str, body: str) -> str:
 
 
 def third_party_licenses(bundle: str = "") -> str:
-    """The licence texts of everything the package contains besides HydraFlasher:
+    """The license texts of everything the package contains besides HydraFlasher:
     the Python packages, Python (with Tcl/Tk etc.) and, on Linux, the system
     libraries PyInstaller copied into `bundle` (their Debian/Ubuntu copyright files).
-    MIT/BSD-style licences require these notices to ship with the binaries."""
+    MIT/BSD-style licenses require these notices to ship with the binaries."""
     from importlib import metadata
 
     parts = [
-        "HydraFlasher is free software under the GNU General Public License v3 "
-        "(LICENSE.txt). Its packages also contain the following software, under "
-        "their own licences.\n\n"
+        "HydraFlasher is free software under the GNU General Public License, "
+        "version 3 or (at your option) any later version (LICENSE.txt). Its packages also contain the following software, under "
+        "their own licenses.\n\n"
     ]
     for name in BUNDLED_DISTS:
         try:
@@ -92,6 +103,9 @@ def third_party_licenses(bundle: str = "") -> str:
         kind = dist.metadata.get("License-Expression") or dist.metadata.get("License") or ""
         body = "\n".join(texts) or f"License: {kind}"
         parts.append(_section(f"{name} {dist.version} ({kind[:60]})", body))
+    for title, path in EXTRA_LICENSES.items():
+        with open(path, encoding="utf-8") as f:
+            parts.append(_section(title, f.read()))
 
     version = f"{sys.version_info.major}.{sys.version_info.minor}"
     for path in (
@@ -110,7 +124,12 @@ def third_party_licenses(bundle: str = "") -> str:
         for lib in glob.glob(os.path.join(bundle, "**", "*.so*"), recursive=True):
             out = subprocess.run(["dpkg", "-S", "*/" + os.path.basename(lib)],
                                  capture_output=True, text=True).stdout
-            packages.update(line.split(":")[0] for line in out.splitlines() if ":" in line)
+            # "pkg[:arch]: /path"; a name can match several packages (lib32z1 next
+            # to zlib1g): take the one whose file PyInstaller copied, the same size
+            for line in out.splitlines():
+                pkg, _, path = line.partition(": ")
+                if os.path.isfile(path) and os.path.getsize(path) == os.path.getsize(lib):
+                    packages.add(pkg.split(":")[0])
         for pkg in sorted(packages):
             path = f"/usr/share/doc/{pkg}/copyright"
             if os.path.isfile(path):
@@ -134,7 +153,39 @@ def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
-def pyinstaller(name: str, onefile: bool, icon: str, hidden: list, extra_data=()):
+COPYRIGHT = "Copyright (C) 2026 Jakub Heger"
+
+
+def windows_version_file(version: str) -> str:
+    """A PyInstaller version resource, so the .exe's Properties show version,
+    description and copyright."""
+    nums = (tuple(int(x) for x in re.findall(r"\d+", version)) + (0, 0, 0, 0))[:4]
+    strings = {
+        "CompanyName": "Waffelo", "FileDescription": "HydraFlasher",
+        "FileVersion": version, "InternalName": "HydraFlasher",
+        "LegalCopyright": f"{COPYRIGHT}, GPL-3.0-or-later",
+        "OriginalFilename": "HydraFlasher.exe", "ProductName": "HydraFlasher",
+        "ProductVersion": version,
+    }
+    entries = ",\n".join(f"StringStruct({k!r}, {v!r})" for k, v in strings.items())
+    text = f"""VSVersionInfo(
+  ffi=FixedFileInfo(filevers={nums}, prodvers={nums}, mask=0x3f, flags=0x0,
+                    OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
+  kids=[
+    StringFileInfo([StringTable('040904B0', [{entries}])]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])]),
+  ],
+)
+"""
+    path = os.path.join(BUILD, "version_info.txt")
+    os.makedirs(BUILD, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return path
+
+
+def pyinstaller(name: str, onefile: bool, icon: str, hidden: list, extra_data=(),
+                version_file: str = ""):
     """Freeze HydraFlasher.py (windowed: no console)."""
     cmd = [
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",
@@ -145,8 +196,15 @@ def pyinstaller(name: str, onefile: bool, icon: str, hidden: list, extra_data=()
         "--collect-data", "customtkinter",
     ]
     try:
-        import tkinterdnd2  # noqa: F401  (optional: drag and drop)
-        cmd += ["--collect-all", "tkinterdnd2"]
+        import tkinterdnd2  # optional: drag and drop
+        cmd += ["--collect-submodules", "tkinterdnd2"]
+        # tkinterdnd2 ships tkdnd for every platform; only this one's is needed
+        # (tkinterdnd2._require picks <platform> or <platform>-tcl9)
+        tkdnd = os.path.join(os.path.dirname(tkinterdnd2.__file__), "tkdnd")
+        for sub in (TKDND_PLATFORM, TKDND_PLATFORM + "-tcl9"):
+            if os.path.isdir(os.path.join(tkdnd, sub)):
+                cmd += ["--add-data", f"{os.path.join(tkdnd, sub)}{os.pathsep}"
+                        f"tkinterdnd2/tkdnd/{sub}"]
     except ImportError:
         print("tkinterdnd2 not installed: building without drag and drop")
     # The git commit, shown next to the version in settings (app_commit())
@@ -158,6 +216,8 @@ def pyinstaller(name: str, onefile: bool, icon: str, hidden: list, extra_data=()
     if extra_data:
         for path in extra_data:
             cmd += ["--add-data", f"{path}{os.pathsep}."]
+    if version_file:
+        cmd += ["--version-file", version_file]
     for module in hidden:
         cmd += ["--hidden-import", module]
     cmd += ["--onefile"] if onefile else ["--onedir"]
@@ -184,8 +244,9 @@ def build_windows(version: str):
     notices = os.path.join(BUILD, "notices")
     write_licenses(notices)  # python.org's LICENSE.txt covers its DLLs (Tcl/Tk, …)
     data = [os.path.join(notices, n) for n in ("LICENSE.txt", LICENSES_NAME)]
-    pyinstaller("HydraFlasher", False, icon, hidden, data)  # folder: for the installer
-    pyinstaller("HydraFlasher-portable", True, icon, hidden, data)
+    info = windows_version_file(version)
+    pyinstaller("HydraFlasher", False, icon, hidden, data, info)  # folder: for the installer
+    pyinstaller("HydraFlasher-portable", True, icon, hidden, data, info)
     self_test([os.path.join(DIST, "HydraFlasher", "HydraFlasher.exe")])
     portable = os.path.join(RELEASE, f"HydraFlasher-{version}-portable.exe")
     shutil.copy(os.path.join(DIST, "HydraFlasher-portable.exe"), portable)
