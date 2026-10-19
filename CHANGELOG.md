@@ -5,6 +5,7 @@ Each app release (`app-v<version>` tag) publishes the section of its version as 
 ## Unreleased
 
 ### Changed
+- **One notification when the queue is done**, not one per job: a queue of four writes ends with "All done · 4 jobs finished", or "Done, 1 of 4 failed" naming the failed job. The taskbar highlight waits for the end too.
 - **Settings show the copyright and license** under the credit line: © 2026 Jakub Heger · GPL-3.0-or-later · comes with no warranty. The README says the same, with a reminder to keep a backup before flashing.
 - **The Windows `.exe` files carry version information** (version, description, copyright in their Properties), and so does the installer.
 - **Smaller packages:** the drag-and-drop library (tkdnd) is bundled only for the package's own platform, not for all twelve.

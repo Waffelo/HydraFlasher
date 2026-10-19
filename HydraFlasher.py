@@ -1582,6 +1582,9 @@ class HydraUI(ctk.CTk):
         self._abort_requested = False
         # Jobs started while another one runs wait here (one bus, so one job at a time)
         self._queue: List[dict] = []
+        # Results of the jobs since the queue was last empty, (ok, operation, message):
+        # one notification when the whole run is done, not one per queued job
+        self._run_results: List[Tuple[bool, str, str]] = []
         self._queue_gen = 0  # invalidates stale "start the next job" callbacks
         self._queue_wait_scan: Optional[int] = None
         self._retrying = False
@@ -3771,17 +3774,39 @@ class HydraUI(ctk.CTk):
         if ok:
             self.log_line(f"{BULLET} ✓ {msg}", "success")
             self._set_idle_status(trunc(first, 90), T["green"], took)
-            if self._job_op(self._entry) not in NOTIFY_FAILURE_ONLY:
-                self.notify("Success", msg)
             self._set_led(LED["SUCCESS"])
         else:
             self.log_line(f"{BULLET} ✕ {msg}", "error")
             self._set_idle_status(trunc(first, 90), T["red"], took)
-            self.notify("Failed", msg)
             self._set_led(LED["FAILED"])
+        self._run_results.append((ok, self._job_op(self._entry), msg))
+        if not self._queue:
+            self._notify_run()
         self.save_config()
         self._refresh_settings()
         self._refresh_history()
+
+    def _notify_run(self):
+        """The queue ran empty: one notification for every job since it started.
+        A successful probe or identify on its own isn't worth one (NOTIFY_FAILURE_ONLY)."""
+        results = [
+            r for r in self._run_results if not (r[0] and r[1] in NOTIFY_FAILURE_ONLY)
+        ]
+        self._run_results = []
+        if not results:
+            return
+        failed = [msg for ok, _, msg in results if not ok]
+        if len(results) == 1:
+            ok, _, msg = results[0]
+            self.notify("Success" if ok else "Failed", msg)
+        elif not failed:
+            self.notify("All done", f"{len(results)} jobs finished.\n{results[-1][2]}")
+        else:
+            lines = "\n".join(m.splitlines()[0] for m in failed[:3])
+            more = f"\n… and {len(failed) - 3} more" if len(failed) > 3 else ""
+            self.notify(
+                f"Done, {len(failed)} of {len(results)} failed", lines + more
+            )
 
     @staticmethod
     def _job_op(entry: dict) -> str:
