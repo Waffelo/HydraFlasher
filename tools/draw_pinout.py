@@ -37,7 +37,7 @@ d.rectangle(s(405, 330, 465, 390), fill="#263238")
 d.text(s(435, 360), "RP2040", font=f_small, fill="#90a4ae", anchor="mm")
 d.rectangle(s(425, 440, 455, 470), fill="#263238")
 
-LEFT = {  # pin: (label, colour, GPIO)
+LEFT = {  # pin: (label, color, GPIO)
     4: ("SCK", "#43a047", "GP2"),
     5: ("MOSI", "#43a047", "GP3"),
     6: ("MISO", "#43a047", "GP4"),
@@ -54,7 +54,7 @@ LEFT = {  # pin: (label, colour, GPIO)
     19: ("CS9", "#64b5f6", "GP14"),
 }
 LEFT_GND = {3, 8, 13, 18}
-RIGHT = {  # pin: (label, colour, GPIO)
+RIGHT = {  # pin: (label, color, GPIO)
     21: ("LED busy", "#fb8c00", "GP16"),
     22: ("LED pass", "#2e7d32", "GP17"),
     24: ("LED fail", "#e53935", "GP18"),
@@ -79,11 +79,11 @@ def num_box(x, y, n):
     d.text(s(x, y), str(n), font=f_num, fill="#263238", anchor="mm")
 
 
-def label(x1, y, text, colour, align_right):
+def label(x1, y, text, color, align_right):
     w = f_label.getlength(text) / K + 20
     x0 = x1 - w if align_right else x1
     xe = x1 if align_right else x1 + w
-    d.rounded_rectangle(s(x0, y - 13, xe, y + 13), radius=4 * K, fill=colour)
+    d.rounded_rectangle(s(x0, y - 13, xe, y + 13), radius=4 * K, fill=color)
     d.text(s((x0 + xe) / 2, y), text, font=f_label, fill="#ffffff", anchor="mm")
 
 
@@ -94,20 +94,20 @@ for pin in range(1, 41):
     pad(px, y)
     if left:
         if pin in LEFT:
-            text, colour, gp = LEFT[pin]
+            text, color, gp = LEFT[pin]
             d.line(s(BX0 - 60, y, px, y), fill="#90a4ae", width=2 * K)
             num_box(BX0 - 44, y, pin)
-            label(BX0 - 66, y, text, colour, align_right=True)
+            label(BX0 - 66, y, text, color, align_right=True)
             d.text(s(px + 16, y), gp, font=f_gp, fill="#e8f5e9", anchor="lm")
         elif pin in LEFT_GND:
             d.line(s(BX0 - 30, y, px, y), fill="#90a4ae", width=2 * K)
             d.text(s(BX0 - 36, y), f"{pin}  GND", font=f_small, fill="#78909c", anchor="rm")
     else:
         if pin in RIGHT:
-            text, colour, gp = RIGHT[pin]
+            text, color, gp = RIGHT[pin]
             d.line(s(px, y, BX1 + 60, y), fill="#90a4ae", width=2 * K)
             num_box(BX1 + 44, y, pin)
-            label(BX1 + 66, y, text, colour, align_right=False)
+            label(BX1 + 66, y, text, color, align_right=False)
             if gp:
                 d.text(s(px - 16, y), gp, font=f_gp, fill="#e8f5e9", anchor="rm")
         elif pin in RIGHT_GND:
@@ -122,16 +122,16 @@ d.text(s(BX0 + 30, pin_y(20)), "20", font=f_small, fill="#e8f5e9", anchor="lm")
 
 # Legend
 ly = BY1 + 28
-for i, (text, colour) in enumerate((("SPI, shared", "#43a047"),
+for i, (text, color) in enumerate((("SPI, shared", "#43a047"),
                                     ("CS, sockets 1-4", "#1e88e5"),
                                     ("CS, sockets 5-10", "#64b5f6"),
                                     ("status LEDs", "#fb8c00"))):
     x = 70 + i * 185
-    d.rounded_rectangle(s(x, ly - 7, x + 14, ly + 7), radius=3 * K, fill=colour)
+    d.rounded_rectangle(s(x, ly - 7, x + 14, ly + 7), radius=3 * K, fill=color)
     d.text(s(x + 22, ly), text, font=f_gp, fill="#78909c", anchor="lm")
 
 im = im.resize((W, H), Image.LANCZOS)
-# A 256-colour palette keeps the antialiased edges and is ~5x smaller than RGBA
+# A 256-color palette keeps the antialiased edges and is ~5x smaller than RGBA
 im = im.quantize(colors=256, method=Image.Quantize.FASTOCTREE)
 im.save(out, optimize=True)
 print(out, im.size)

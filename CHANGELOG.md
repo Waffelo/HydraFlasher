@@ -2,6 +2,18 @@
 
 Each app release (`app-v<version>` tag) publishes the section of its version as the GitHub release notes, next to the Windows installer, the portable `.exe` and the Linux AppImage; CI refuses a tag without one. Keep the headings as `## <version> · <date>`. The Pico firmware has its own changelog: [firmware/CHANGELOG.md](firmware/CHANGELOG.md).
 
+## Unreleased
+
+### Changed
+- **One notification when the queue is done**, not one per job: a queue of four writes ends with "All done · 4 jobs finished", or "Done, 1 of 4 failed" naming the failed job. The taskbar highlight waits for the end too.
+- **Settings show the copyright and license** under the credit line: © 2026 Jakub Heger · GPL-3.0-or-later · comes with no warranty. The README says the same, with a reminder to keep a backup before flashing.
+- **The Windows `.exe` files carry version information** (version, description, copyright in their Properties), and so does the installer.
+- **Smaller packages:** the drag-and-drop library (tkdnd) is bundled only for the package's own platform, not for all twelve.
+
+### Fixed
+- **Every chip showed as `unknown` with flashprog 1.6.** flashprog 1.6 names a found chip with `Using … flash chip` instead of `Found … flash chip`, and lists several matching definitions by name only; HydraFlasher now reads both versions' output. (A chip matching several definitions takes its size from its JEDEC ID until you pick one.)
+- **`THIRD-PARTY-LICENSES.txt` was missing tkdnd's license** (the native drag-and-drop library inside tkinterdnd2), and on Linux listed two unrelated 32-bit system packages.
+
 ## 1.1.0 · 2026-10-16
 
 **The Linux AppImage works properly, and the flash log becomes a page in the app.** The AppImage's file buttons and notifications are fixed, a finished job lights up the taskbar, the flash log has its own history page, and the app is ready for firmware 1.3.
@@ -14,8 +26,8 @@ Each app release (`app-v<version>` tag) publishes the section of its version as 
 ### New
 - **Flash history page** (**flash log ▸**): every write and verify as a table, newest first, with socket names and green/red results; filter all / failures / today; **export CSV…**, **open folder**, and **clear…**, which archives the old log as `flash_log-<date>.csv` instead of deleting it.
 - **The taskbar entry lights up** when a job ends while you're in another window (Linux: until you switch back; Windows: it flashes), whether notifications are on or not.
-- **Firmware 1.3's USB identity** (`2E8A:000A`) is recognised, also when the Pico restarts during a firmware update.
-- **Licenses:** the packages include the licence texts of everything bundled with HydraFlasher (Python, Tcl/Tk, customtkinter, pyserial, …); settings → version → **licenses** opens them.
+- **Firmware 1.3's USB identity** (`2E8A:000A`) is recognized, also when the Pico restarts during a firmware update.
+- **Licenses:** the packages include the license texts of everything bundled with HydraFlasher (Python, Tcl/Tk, customtkinter, pyserial, …); settings → version → **licenses** opens them.
 - Settings show the git commit a package was built from next to the version.
 
 ### Changed

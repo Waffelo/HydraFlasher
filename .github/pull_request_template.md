@@ -2,7 +2,7 @@
 <!-- What this changes and why, in two or three sentences. -->
 
 ## Changes
-<!-- What a user notices: new or changed settings, buttons, messages, behaviour. -->
+<!-- What a user notices: new or changed settings, buttons, messages, behavior. -->
 -
 
 ## Fixes

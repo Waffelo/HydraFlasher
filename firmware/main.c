@@ -1,16 +1,22 @@
 /**
- * Further modified by Jakub Heger <contact@waffelo.net>
+ * HydraFlasher firmware: serprog for the Raspberry Pi Pico with several sockets.
+ *
+ * Copyright (C) 2026 Jakub Heger <contact@waffelo.net>
  * Copyright (C) 2021, Mate Kukri <km@mkukri.xyz>
  * Based on "pico-serprog" by Thomas Roth <code@stacksmashing.net>
  *
- * Licensed under GPLv3
+ * Licensed under GPLv3 (see COPYING; third-party notices in NOTICE)
  *
  * Also based on stm32-vserprog:
  *  https://github.com/dword1511/stm32-vserprog
  *
  * Features added for HydraFlasher:
  *  - Multi chip-select support (10 sockets + broadcast),
- *  - LED status indicator
+ *  - LED status indicator,
+ *  - CRC32 of a flash range on the Pico (DMA sniffer),
+ *  - Reboot into the USB bootloader on command,
+ *  - Number of CS lines and which of them are wired to a socket,
+ *  - Status register polling on the Pico, double-buffered DMA reads.
  *
  */
 

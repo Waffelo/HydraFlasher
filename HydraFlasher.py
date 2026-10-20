@@ -155,6 +155,8 @@ APP_VERSION = "1.1.0"
 # Firmware updates: GitHub Releases tagged fw-v<version> carry the .uf2 (CI builds them)
 GITHUB_REPO = "Waffelo/HydraFlasher"
 REPO_URL = f"https://github.com/{GITHUB_REPO}"
+COPYRIGHT = "© 2026 Jakub Heger"
+LICENSE_NAME = "GPL-3.0-or-later"
 FW_TAG_PREFIX = "fw-v"
 FW_NAME_PREFIX = "HydraFlasher "  # S_CMD_Q_PGMNAME of firmware 1.1+ ("pico-serprog" before)
 FW_VERSION_RE = re.compile(rb"HydraFlasher (\d+\.\d+)")
@@ -162,7 +164,8 @@ UF2_MAGIC = (0x0A324655, 0x9E5D5157, 0x0AB16F30)  # start 0, start 1, end
 UF2_FAMILY_RP2040 = 0xE48BFF56
 RP2_LABEL = "RPI-RP2"  # the Pico bootloader's drive
 
-FOUND_RE = re.compile(r'Found (.*?)\s*flash chip "([^"]+)" \((\d+) kB')
+# "Found <vendor> flash chip ..." up to flashprog 1.5, "Using ..." since 1.6
+FOUND_RE = re.compile(r'(?:Found|Using) (.*?)\s*flash chip "([^"]+)" \((\d+) kB')
 MULTI_MATCH = "Multiple flash chip definitions match"
 NOISE_PATTERNS = [
     "flashprog is free software",
@@ -193,7 +196,7 @@ THEME_DARK = {
     "yellow": "#e3b341",
     "led_empty": "#6e3b36",
 }
-# Text colours reach ~4.5:1 contrast on the panels (faint is meant to be dim)
+# Text colors reach ~4.5:1 contrast on the panels (faint is meant to be dim)
 THEME_LIGHT = {
     "bg": "#faf9f5",
     "panel": "#f2f0e8",
@@ -712,7 +715,7 @@ LOGO_PNG = {
 }
 
 # Light/dark switch icons: sun and moon drawn smooth at 1x/2x by the build-time
-# script that also made the logo, kept as 8-bit alpha masks and coloured with
+# script that also made the logo, kept as 8-bit alpha masks and colored with
 # tinted_icon() at runtime, so they follow the theme without Pillow.
 THEME_ICONS = {  # (icon, scale): (size, base64 of zlib'd 8-bit alpha mask)
     ("sun", 1): (18, "eNplUDsOgzAMfXGQx8A5kbgJ3IEhEjsSF6BbK4FADB3pLSrUyE1IltLnwX6Jf8+A1gqKnw94pzUiCLm7gVQilfWRkcWHylYgjU5aznjos4xb6aAVnf5E+POl3mxZ1PNUF6U9KaDBq3isDKLYnhp5O/eWhgKb9lfPq3Mizq3c38ft92U4jv1SZcy1c0hI06c5TveL/22YVGT9wElFVEpYxCAqPdMVYfzkiSBcTClsO3sXLvYFvw1kgw=="),
@@ -725,7 +728,7 @@ THEME_ICONS = {  # (icon, scale): (size, base64 of zlib'd 8-bit alpha mask)
 
 
 def tinted_icon(master, name: str, scale: int, fg: str, bg: str) -> tkinter.PhotoImage:
-    """A THEME_ICONS mask drawn in colour fg on bg (both "#rrggbb")."""
+    """A THEME_ICONS mask drawn in color fg on bg (both "#rrggbb")."""
     size, data = THEME_ICONS[(name, scale)]
     alpha = zlib.decompress(base64.b64decode(data))
     shades: Dict[int, str] = {}
@@ -742,7 +745,7 @@ _UNSCANNED = ("?", None)
 
 
 def blend(c1, c2, t: float):
-    """Mix colour c1 into c2 by factor t (0 → c2, 1 → c1). (light, dark) pairs are
+    """Mix color c1 into c2 by factor t (0 → c2, 1 → c1). (light, dark) pairs are
     mixed per mode and give a pair."""
     if isinstance(c1, tuple) or isinstance(c2, tuple):
         p1 = c1 if isinstance(c1, tuple) else (c1, c1)
@@ -890,6 +893,16 @@ def fw_version(name: Optional[str]) -> Optional[str]:
     if name and name.startswith(FW_NAME_PREFIX):
         return name[len(FW_NAME_PREFIX) :].strip() or None
     return None
+
+
+def jedec_size_kb(jedec: str) -> Optional[int]:
+    """The size most SPI flash chips encode in their JEDEC ID's capacity byte
+    (2^n bytes: EF4019 -> 32 MiB), None when it's outside the usual range."""
+    try:
+        cap = int(jedec[4:6], 16)
+    except ValueError:
+        return None
+    return (1 << cap) // 1024 if 0x10 <= cap <= 0x22 else None
 
 
 def version_key(version: str) -> Tuple[int, ...]:
@@ -1272,7 +1285,7 @@ class TtyToggle(ctk.CTkLabel):
 class SocketCard(ctk.CTkFrame):
     """One socket with a status light. Click to select it as target."""
 
-    STATES = {  # state: (led colour, lit)
+    STATES = {  # state: (led color, lit)
         "unknown": (T["faint"], False),
         "empty": (T["led_empty"], False),
         "ok": (T["green"], True),
@@ -1349,7 +1362,6 @@ class SocketCard(ctk.CTkFrame):
             self._detail_lbl,
         ):
             w.bind("<Button-1>", lambda e: on_click())
-        self._fonts = fonts
         # Monospace: one character width per font, measured once. Measuring is a
         # slow round trip into Tk, and <Configure> fires many times per resize.
         self._char_w = tuple(
@@ -1581,6 +1593,9 @@ class HydraUI(ctk.CTk):
         self._abort_requested = False
         # Jobs started while another one runs wait here (one bus, so one job at a time)
         self._queue: List[dict] = []
+        # Results of the jobs since the queue was last empty, (ok, operation, message):
+        # one notification when the whole run is done, not one per queued job
+        self._run_results: List[Tuple[bool, str, str]] = []
         self._queue_gen = 0  # invalidates stale "start the next job" callbacks
         self._queue_wait_scan: Optional[int] = None
         self._retrying = False
@@ -2293,7 +2308,7 @@ class HydraUI(ctk.CTk):
         tb.bind("<Control-a>", lambda e: (self._select_all_log(), "break")[1])
         self.log_menu = tkinter.Menu(
             self, tearoff=0, bd=0, font=self.fonts["normal"]
-        )  # colours: _apply_log_colors
+        )  # colors: _apply_log_colors
         self.log_menu.add_command(label="Copy", command=self._copy_log)
         self.log_menu.add_command(
             label="Copy all", command=lambda: self._copy_log(all_text=True)
@@ -2311,7 +2326,7 @@ class HydraUI(ctk.CTk):
             tb.bind(seq, self._show_log_menu)
 
     def _apply_log_colors(self):
-        """Colours of the log's plain Tk parts: text tags, selection, right-click menu.
+        """Colors of the log's plain Tk parts: text tags, selection, right-click menu.
         Tk doesn't follow customtkinter's appearance mode, so _apply_theme reruns this."""
         for tag, color in LOG_COLORS.items():
             self.log.tag_config(tag, foreground=tk_color(color))
@@ -2333,7 +2348,7 @@ class HydraUI(ctk.CTk):
         self.save_config()
 
     def _apply_theme(self):
-        """Re-colour the plain Tk widgets; customtkinter widgets switch by themselves."""
+        """Re-color the plain Tk widgets; customtkinter widgets switch by themselves."""
         self._render_theme_switch()
         self._render_gear()
         if self._logo_lbl:
@@ -2602,7 +2617,7 @@ class HydraUI(ctk.CTk):
                             self._set_led(LED["IDLE"])
                         else:
                             self.log_note(
-                                f"Programmer disconnected", "warning"
+                                "Programmer disconnected", "warning"
                             )
                             self._unresponsive = None  # replugged: try it afresh
                             self._reset_sockets()
@@ -2834,12 +2849,7 @@ class HydraUI(ctk.CTk):
                 "uid": None,
             }
         cached = self.jedec_cache.get(jedec)
-        cap = int(jedec[4:6], 16)
-        size_kb = (
-            cached["size_kb"]
-            if cached
-            else ((1 << cap) // 1024 if 0x10 <= cap <= 0x22 else None)
-        )
+        size_kb = cached["size_kb"] if cached else jedec_size_kb(jedec)
         chips = list(cached["chips"]) if cached else []
         return {
             "cs": cs,
@@ -2915,6 +2925,10 @@ class HydraUI(ctk.CTk):
             else (None, None)
         )
         info["jedec"], info["uid"] = jedec, uid
+        if info["detected"] and not info["size_kb"] and jedec:
+            # flashprog 1.6+ names several matching definitions without their size
+            cached = self.jedec_cache.get(jedec)
+            info["size_kb"] = (cached or {}).get("size_kb") or jedec_size_kb(jedec)
         # Only learn from auto-detect runs: with -c flashprog reports just the forced
         # definition, which would hide that several definitions match this chip
         used = getattr(self, "_chip_used", self._job.get("chip", "Auto-detect"))
@@ -2923,6 +2937,12 @@ class HydraUI(ctk.CTk):
                 "chips": info["chips"],
                 "size_kb": info["size_kb"],
             }
+        elif jedec in self.jedec_cache and info["size_kb"] and info["chips"]:
+            # A run with -c reports the definition's real size: correct a size that
+            # was only guessed from the JEDEC ID
+            cached = self.jedec_cache[jedec]
+            if set(info["chips"]) <= set(cached["chips"]):
+                cached["size_kb"] = info["size_kb"]
         self.slots[cs] = info
 
     # ====================== Logging & Helpers ======================
@@ -2963,7 +2983,7 @@ class HydraUI(ctk.CTk):
 
     def log_note(self, text: str, kind: str = "info"):
         """A message outside the job tree (events, refusals, choices): "● ⚠ text".
-        kind is the colour tag; warning and error also get an icon. Separated from a
+        kind is the color tag; warning and error also get an icon. Separated from a
         finished job by an empty line. While a job runs, its tree is left alone."""
         icon = {"warning": "⚠ ", "error": "✕ "}.get(kind, "")
         if self.busy:
@@ -3770,17 +3790,39 @@ class HydraUI(ctk.CTk):
         if ok:
             self.log_line(f"{BULLET} ✓ {msg}", "success")
             self._set_idle_status(trunc(first, 90), T["green"], took)
-            if self._job_op(self._entry) not in NOTIFY_FAILURE_ONLY:
-                self.notify("Success", msg)
             self._set_led(LED["SUCCESS"])
         else:
             self.log_line(f"{BULLET} ✕ {msg}", "error")
             self._set_idle_status(trunc(first, 90), T["red"], took)
-            self.notify("Failed", msg)
             self._set_led(LED["FAILED"])
+        self._run_results.append((ok, self._job_op(self._entry), msg))
+        if not self._queue:
+            self._notify_run()
         self.save_config()
         self._refresh_settings()
         self._refresh_history()
+
+    def _notify_run(self):
+        """The queue ran empty: one notification for every job since it started.
+        A successful probe or identify on its own isn't worth one (NOTIFY_FAILURE_ONLY)."""
+        results = [
+            r for r in self._run_results if not (r[0] and r[1] in NOTIFY_FAILURE_ONLY)
+        ]
+        self._run_results = []
+        if not results:
+            return
+        failed = [msg for ok, _, msg in results if not ok]
+        if len(results) == 1:
+            ok, _, msg = results[0]
+            self.notify("Success" if ok else "Failed", msg)
+        elif not failed:
+            self.notify("All done", f"{len(results)} jobs finished.\n{results[-1][2]}")
+        else:
+            lines = "\n".join(m.splitlines()[0] for m in failed[:3])
+            more = f"\n… and {len(failed) - 3} more" if len(failed) > 3 else ""
+            self.notify(
+                f"Done, {len(failed)} of {len(results)} failed", lines + more
+            )
 
     @staticmethod
     def _job_op(entry: dict) -> str:
@@ -4325,6 +4367,12 @@ class HydraUI(ctk.CTk):
     @staticmethod
     def _parse_probe(text: str, cs: int) -> dict:
         found = FOUND_RE.findall(text)
+        if not found:
+            # flashprog 1.6+ lists several matching definitions only by name, without
+            # a "Using …" line or sizes (_store_slot fills the size in from the JEDEC ID)
+            m = re.search(MULTI_MATCH + r".*?:\s*(.+)", text)
+            if m:
+                found = [("", name, None) for name in re.findall(r'"([^"]+)"', m.group(1))]
         # flashprog's catch-all definitions ("unknown SPI chip (RDID)", "unknown Winbond
         # (ex Nexcom) SPI chip", ...) mean it has no real definition: never learn those
         real = [f for f in found if not is_generic_chip(f[1])]
@@ -4337,7 +4385,7 @@ class HydraUI(ctk.CTk):
             "name": " / ".join(chips)
             if chips
             else ("unsupported chip" if unsupported else "NOT DETECTED"),
-            "size_kb": int(real[0][2]) if real else None,
+            "size_kb": int(real[0][2]) if real and real[0][2] else None,
             "unsupported": unsupported,
         }
 
@@ -5521,7 +5569,7 @@ class HydraUI(ctk.CTk):
         self._apply_history_colors()
 
     def _apply_history_colors(self):
-        """Plain Tk tag colours of the table (re-run by _apply_theme)."""
+        """Plain Tk tag colors of the table (re-run by _apply_theme)."""
         if self._history_view is None:
             return
         for tag, color in LOG_COLORS.items():
@@ -5857,6 +5905,11 @@ class HydraUI(ctk.CTk):
             if link:
                 lbl.bind("<Button-1>", lambda e: self._open_repo())
                 self._credit_links.append(lbl)
+        ctk.CTkLabel(
+            body, text=f"{COPYRIGHT} · {LICENSE_NAME} · comes with no warranty",
+            font=self.fonts["small"], text_color=T["faint"],
+        ).pack(pady=(0, 12))
+        credit.pack_configure(pady=(22, 0))
         self._app_commit: Optional[str] = None  # filled in by a background git call
         threading.Thread(target=self._load_app_commit, daemon=True).start()
 
@@ -5869,7 +5922,7 @@ class HydraUI(ctk.CTk):
         self._refresh_settings()
 
     def _open_licenses(self):
-        """HydraFlasher's licence; a package also has the bundled software's notices."""
+        """HydraFlasher's license; a package also has the bundled software's notices."""
         here = os.path.dirname(os.path.abspath(__file__))
         for name in ("THIRD-PARTY-LICENSES.txt", "LICENSE"):
             path = os.path.join(here, name)
@@ -6030,7 +6083,7 @@ class HydraUI(ctk.CTk):
         self._set_led(LED["IDLE"], force=True)
 
     def _fw_summary(self) -> Tuple[str, str]:
-        """What the Pico's firmware is, as (text, colour) for the settings page."""
+        """What the Pico's firmware is, as (text, color) for the settings page."""
         if self._rp2_present:
             return "a Pico in bootloader mode (RPI-RP2) · install firmware below", T["accent"]
         if not self._port_connected:
@@ -6848,7 +6901,7 @@ def self_test(out_path: str) -> int:
             os.path.isfile(os.path.join(here, n))
             for n in ("LICENSE.txt", "THIRD-PARTY-LICENSES.txt")
         ):
-            raise RuntimeError("the licence files aren't in the bundle")
+            raise RuntimeError("the license files aren't in the bundle")
         report["notifications"] = NOTIFICATIONS_AVAILABLE
         report["dnd"] = False
         if DND_AVAILABLE:

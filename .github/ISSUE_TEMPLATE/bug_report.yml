@@ -1,0 +1,55 @@
+name: Bug report
+description: Something in HydraFlasher or its firmware doesn't work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The [troubleshooting page](https://github.com/Waffelo/HydraFlasher/wiki/Troubleshooting) explains most messages; if it doesn't help, fill in what you can below.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: app
+    attributes:
+      label: App version and commit
+      description: "Settings → version, e.g. `HydraFlasher 1.1.0 · git 1c78393`"
+      placeholder: HydraFlasher 1.1.0 · git 1c78393
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware version
+      description: "Settings → firmware, e.g. `HydraFlasher 1.3 · 10 CS lines`"
+  - type: dropdown
+    id: package
+    attributes:
+      label: How you run it
+      options:
+        - Windows installer
+        - Windows portable .exe
+        - Linux AppImage
+        - From source (python3 HydraFlasher.py)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and desktop
+      placeholder: Debian 13, KDE Plasma (Wayland)
+  - type: input
+    id: flashprog
+    attributes:
+      label: flashprog or flashrom version
+      placeholder: flashprog 1.6
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Right-click the log → Select all, then Copy, and paste it here (or just the part around the problem).
+      render: text

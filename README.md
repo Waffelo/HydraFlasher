@@ -32,6 +32,8 @@ every run.
 | `HydraFlasher.py` | The GUI (Python, customtkinter) |
 | `firmware/` | Pico serprog firmware with multi-CS, status LEDs and on-device CRC32 |
 | `packaging/` | Builds the Windows installer, portable `.exe` and Linux AppImage |
+| `tests/` | GUI tests with a fake Pico and a fake flashprog (`tests/run_all.sh`) |
+| `tools/` | Scripts that draw the pinout, the icons and the README screenshot |
 
 ## Download
 
@@ -85,7 +87,15 @@ which the app's settings page can download and install on the Pico.
 
 ## License
 
-GPL-3.0, see `LICENSE`. The firmware keeps its upstream licenses
-(`firmware/COPYING`, `firmware/COPYING.CC-BY-SA`). The downloadable packages
-include the licenses of the software bundled with the app in
-`THIRD-PARTY-LICENSES.txt` (settings → version → **licenses**).
+Copyright © 2026 Jakub Heger. HydraFlasher is free software: you can redistribute
+it and/or modify it under the terms of the GNU General Public License, version 3
+or (at your option) any later version, see `LICENSE`.
+
+It comes with **no warranty**. Flashing writes and erases chips: keep a backup
+(read the chip first) of anything you can't replace.
+
+The firmware keeps its upstream licenses (GPLv3, `firmware/COPYING`); a built
+`.uf2` also contains the Pico SDK and TinyUSB, whose notices are in
+`firmware/NOTICE`. The downloadable app packages include the licenses of the
+software bundled with them in `THIRD-PARTY-LICENSES.txt` (settings → version →
+**licenses**).
