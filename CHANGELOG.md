@@ -2,7 +2,14 @@
 
 Each app release (`app-v<version>` tag) publishes the section of its version as the GitHub release notes, next to the Windows installer, the portable `.exe` and the Linux AppImage; CI refuses a tag without one. Keep the headings as `## <version> · <date>`. The Pico firmware has its own changelog: [firmware/CHANGELOG.md](firmware/CHANGELOG.md).
 
-## Unreleased
+## 1.1.1 · 2026-10-20
+
+**Works with flashprog 1.6, and a queue tells you once when it's done.** flashprog 1.6 changed how it reports a chip, which made every socket show `unknown`; this release reads both the old and the new wording. A queue of jobs now ends with one notification instead of one per chip, and the packages carry complete license information.
+
+### Downloads
+- **Windows:** `HydraFlasher-Setup-1.1.1.exe` (installing it over 1.1.0 updates it) or `HydraFlasher-1.1.1-portable.exe`.
+- **Linux:** `HydraFlasher-1.1.1-x86_64.AppImage`: `chmod +x`, then run it. It needs FUSE (`sudo apt install fuse3`), or start it with `--appimage-extract-and-run`.
+- **Firmware:** no new firmware; 1.3 is current.
 
 ### Changed
 - **One notification when the queue is done**, not one per job: a queue of four writes ends with "All done · 4 jobs finished", or "Done, 1 of 4 failed" naming the failed job. The taskbar highlight waits for the end too.
@@ -13,6 +20,9 @@ Each app release (`app-v<version>` tag) publishes the section of its version as 
 ### Fixed
 - **Every chip showed as `unknown` with flashprog 1.6.** flashprog 1.6 names a found chip with `Using … flash chip` instead of `Found … flash chip`, and lists several matching definitions by name only; HydraFlasher now reads both versions' output. (A chip matching several definitions takes its size from its JEDEC ID until you pick one.)
 - **`THIRD-PARTY-LICENSES.txt` was missing tkdnd's license** (the native drag-and-drop library inside tkinterdnd2), and on Linux listed two unrelated 32-bit system packages.
+
+### Also
+- **Bug reports:** [a new issue form](https://github.com/Waffelo/HydraFlasher/issues/new?template=bug_report.yml) asks for the app and firmware version, the OS, the flashprog version and the log.
 
 ## 1.1.0 · 2026-10-16
 
