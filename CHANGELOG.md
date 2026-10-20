@@ -11,6 +11,7 @@ Each app release (`app-v<version>` tag) publishes the section of its version as 
 - **Smaller packages:** the drag-and-drop library (tkdnd) is bundled only for the package's own platform, not for all twelve.
 
 ### Fixed
+- **Every chip showed as `unknown` with flashprog 1.6.** flashprog 1.6 names a found chip with `Using … flash chip` instead of `Found … flash chip`, and lists several matching definitions by name only; HydraFlasher now reads both versions' output. (A chip matching several definitions takes its size from its JEDEC ID until you pick one.)
 - **`THIRD-PARTY-LICENSES.txt` was missing tkdnd's license** (the native drag-and-drop library inside tkinterdnd2), and on Linux listed two unrelated 32-bit system packages.
 
 ## 1.1.0 · 2026-10-16

@@ -14,10 +14,14 @@ here = os.path.dirname(os.path.abspath(__file__))
 
 if len(sys.argv) < 4:  # parent: run every case and pass its PASS/FAIL lines on
     for case in ("six", "ten", "old8", "two", "one", "bad_text", "bad_eleven", "bad_zero"):
-        out = subprocess.run(
-            [sys.executable, os.path.abspath(__file__), sys.argv[1], sys.argv[2], case],
-            capture_output=True, text=True, timeout=100,
-        ).stdout
+        try:
+            out = subprocess.run(
+                [sys.executable, os.path.abspath(__file__), sys.argv[1], sys.argv[2], case],
+                capture_output=True, text=True, timeout=100,
+            ).stdout
+        except subprocess.TimeoutExpired as e:  # a hang must fail, not skip the rest
+            out = (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            print(f"FAIL [{case}] timed out after 100 s", flush=True)
         lines = [l for l in out.splitlines() if l.startswith(("PASS", "FAIL"))]
         for l in lines:
             print(f"{l.split(' ', 1)[0]} [{case}] {l.split(' ', 1)[1]}", flush=True)

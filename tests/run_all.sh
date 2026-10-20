@@ -57,7 +57,11 @@ for t in "$@"; do
     # the hidden display's own D-Bus it would start a notification server)
     mkdir "$work/bin" && printf '#!/bin/sh\n' > "$work/bin/notify-send"
     chmod +x "$work/bin/notify-send"
-    out=$(cd "$work" && PATH="$work/bin:$PATH" timeout 120 python3 "$t" "$src" "$work/shot.png" 2>&1)
+    out=$(cd "$work" && PATH="$work/bin:$PATH" timeout 300 python3 "$t" "$src" "$work/shot.png" 2>&1)
+    rc=$?
+    # A test cut off by the timeout has run only part of its checks: that's a failure
+    [ "$rc" -eq 124 ] && out="$out
+FAIL timed out after 300 s"
     pass=$(printf '%s\n' "$out" | grep -c '^PASS')
     fail=$(printf '%s\n' "$out" | grep -c '^FAIL')
     printf '%-22s %2d passed, %d failed\n' "$t" "$pass" "$fail"

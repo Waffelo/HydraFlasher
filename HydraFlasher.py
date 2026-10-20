@@ -164,7 +164,8 @@ UF2_MAGIC = (0x0A324655, 0x9E5D5157, 0x0AB16F30)  # start 0, start 1, end
 UF2_FAMILY_RP2040 = 0xE48BFF56
 RP2_LABEL = "RPI-RP2"  # the Pico bootloader's drive
 
-FOUND_RE = re.compile(r'Found (.*?)\s*flash chip "([^"]+)" \((\d+) kB')
+# "Found <vendor> flash chip ..." up to flashprog 1.5, "Using ..." since 1.6
+FOUND_RE = re.compile(r'(?:Found|Using) (.*?)\s*flash chip "([^"]+)" \((\d+) kB')
 MULTI_MATCH = "Multiple flash chip definitions match"
 NOISE_PATTERNS = [
     "flashprog is free software",
@@ -892,6 +893,16 @@ def fw_version(name: Optional[str]) -> Optional[str]:
     if name and name.startswith(FW_NAME_PREFIX):
         return name[len(FW_NAME_PREFIX) :].strip() or None
     return None
+
+
+def jedec_size_kb(jedec: str) -> Optional[int]:
+    """The size most SPI flash chips encode in their JEDEC ID's capacity byte
+    (2^n bytes: EF4019 -> 32 MiB), None when it's outside the usual range."""
+    try:
+        cap = int(jedec[4:6], 16)
+    except ValueError:
+        return None
+    return (1 << cap) // 1024 if 0x10 <= cap <= 0x22 else None
 
 
 def version_key(version: str) -> Tuple[int, ...]:
@@ -2838,12 +2849,7 @@ class HydraUI(ctk.CTk):
                 "uid": None,
             }
         cached = self.jedec_cache.get(jedec)
-        cap = int(jedec[4:6], 16)
-        size_kb = (
-            cached["size_kb"]
-            if cached
-            else ((1 << cap) // 1024 if 0x10 <= cap <= 0x22 else None)
-        )
+        size_kb = cached["size_kb"] if cached else jedec_size_kb(jedec)
         chips = list(cached["chips"]) if cached else []
         return {
             "cs": cs,
@@ -2919,6 +2925,10 @@ class HydraUI(ctk.CTk):
             else (None, None)
         )
         info["jedec"], info["uid"] = jedec, uid
+        if info["detected"] and not info["size_kb"] and jedec:
+            # flashprog 1.6+ names several matching definitions without their size
+            cached = self.jedec_cache.get(jedec)
+            info["size_kb"] = (cached or {}).get("size_kb") or jedec_size_kb(jedec)
         # Only learn from auto-detect runs: with -c flashprog reports just the forced
         # definition, which would hide that several definitions match this chip
         used = getattr(self, "_chip_used", self._job.get("chip", "Auto-detect"))
@@ -2927,6 +2937,12 @@ class HydraUI(ctk.CTk):
                 "chips": info["chips"],
                 "size_kb": info["size_kb"],
             }
+        elif jedec in self.jedec_cache and info["size_kb"] and info["chips"]:
+            # A run with -c reports the definition's real size: correct a size that
+            # was only guessed from the JEDEC ID
+            cached = self.jedec_cache[jedec]
+            if set(info["chips"]) <= set(cached["chips"]):
+                cached["size_kb"] = info["size_kb"]
         self.slots[cs] = info
 
     # ====================== Logging & Helpers ======================
@@ -4351,6 +4367,12 @@ class HydraUI(ctk.CTk):
     @staticmethod
     def _parse_probe(text: str, cs: int) -> dict:
         found = FOUND_RE.findall(text)
+        if not found:
+            # flashprog 1.6+ lists several matching definitions only by name, without
+            # a "Using …" line or sizes (_store_slot fills the size in from the JEDEC ID)
+            m = re.search(MULTI_MATCH + r".*?:\s*(.+)", text)
+            if m:
+                found = [("", name, None) for name in re.findall(r'"([^"]+)"', m.group(1))]
         # flashprog's catch-all definitions ("unknown SPI chip (RDID)", "unknown Winbond
         # (ex Nexcom) SPI chip", ...) mean it has no real definition: never learn those
         real = [f for f in found if not is_generic_chip(f[1])]
@@ -4363,7 +4385,7 @@ class HydraUI(ctk.CTk):
             "name": " / ".join(chips)
             if chips
             else ("unsupported chip" if unsupported else "NOT DETECTED"),
-            "size_kb": int(real[0][2]) if real else None,
+            "size_kb": int(real[0][2]) if real and real[0][2] else None,
             "unsupported": unsupported,
         }
 
